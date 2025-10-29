@@ -1,0 +1,16 @@
+[package]
+name = "rust_nn"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "rust_nn"
+path = "src/lib.rs"
+
+[[bin]]
+name = "train"
+path = "src/main.rs"
+required-features = []
+
+[dependencies]
+rand = "0.8"
