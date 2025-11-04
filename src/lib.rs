@@ -6,6 +6,7 @@
 pub mod tensor;
 pub mod nn;
 pub mod optim;
+pub mod gemm;
 
 // Re-export commonly used types for convenience
 pub use tensor::Tensor;

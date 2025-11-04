@@ -204,11 +204,59 @@ impl Tensor {
 
     /// Matrix multiplication
     pub fn matmul(&self, other: &Tensor) -> Tensor {
-        // TODO: Assert both tensors are 2D
-        // TODO: Assert inner dimensions match (self.shape[1] == other.shape[0])
-        // TODO: Implement matrix multiplication algorithm
-        // TODO: If requires_grad, attach MatMulBackward grad_fn
-        todo!("Implement matmul")
+        // Use the gemm module for the actual matrix multiplication
+        let data = crate::gemm::matmul(&self.data, &self.shape, &other.data, &other.shape);
+        let result = Tensor::new(data, vec![self.shape[0], other.shape[1]]);
+
+        if self.requires_grad || other.requires_grad {
+            let self_grad = Rc::clone(&self.grad);
+            let other_grad = Rc::clone(&other.grad);
+            let result_grad = Rc::clone(&result.grad);
+
+            // TODO: Implement self-matmul (x.matmul(&x)) support
+            assert!(
+                !Rc::ptr_eq(&self_grad, &other_grad),
+                "Self-matmul (x.matmul(&x)) is not yet supported"
+            );
+
+            // Clone data and shapes for backward pass
+            let self_data = self.data.clone();
+            let self_shape = self.shape.clone();
+            let other_data = other.data.clone();
+            let other_shape = other.shape.clone();
+
+            Self::with_grad(
+                result,
+                vec![self, other],
+                Box::new(move || {
+                    let grad_output = result_grad.borrow();
+                    let grad_shape = vec![self_shape[0], other_shape[1]];
+
+                    let mut self_g = self_grad.borrow_mut();
+                    let mut other_g = other_grad.borrow_mut();
+
+                    // dL/dA = grad_output @ B^T
+                    crate::gemm::matmul_backward_left(
+                        &grad_output,
+                        &grad_shape,
+                        &other_data,
+                        &other_shape,
+                        &mut self_g,
+                    );
+
+                    // dL/dB = A^T @ grad_output
+                    crate::gemm::matmul_backward_right(
+                        &self_data,
+                        &self_shape,
+                        &grad_output,
+                        &grad_shape,
+                        &mut other_g,
+                    );
+                }),
+            )
+        } else {
+            result
+        }
     }
 
     /// Element-wise addition
@@ -327,17 +375,53 @@ impl Tensor {
     /// Sigmoid activation: 1 / (1 + e^-x)
     pub fn sigmoid(&self) -> Tensor {
         let data = self.data.iter().map(|x| 1.0 / (1.0 + (-x).exp())).collect();
-        let mut result = Tensor::new(data, self.shape.clone());
-        // TODO: grad fn
-        result
+        let result = Tensor::new(data, self.shape.clone());
+
+        if self.requires_grad {
+            let self_grad = Rc::clone(&self.grad);
+            let result_grad = Rc::clone(&result.grad);
+            let result_data = result.data.clone(); // Clone Vec<f32> for the mask
+
+            Self::with_grad(
+                result,
+                vec![self],
+                Box::new(move || {
+                    let grad_output = result_grad.borrow();
+                    let mut self_g = self_grad.borrow_mut();
+
+                    for i in 0..grad_output.len() {
+                        self_g[i] += result_data[i] * (1.0 - result_data[i]) * grad_output[i];
+                    }
+                }),
+            )
+        } else {
+            result
+        }
     }
 
     /// Sum all elements
     pub fn sum(&self) -> Tensor {
         let data = self.data.iter().cloned().sum();
-        let mut result = Tensor::new(vec![data], vec![1]);
-        // TODO: grad fn
-        result
+        let result = Tensor::new(vec![data], vec![1]);
+        if self.requires_grad {
+            let self_grad = Rc::clone(&self.grad);
+            let result_grad = Rc::clone(&result.grad);
+
+            Self::with_grad(
+                result,
+                vec![self],
+                Box::new(move || {
+                    let grad_output = result_grad.borrow();
+                    let mut self_g = self_grad.borrow_mut();
+
+                    for i in 0..self_g.len() {
+                        self_g[i] += grad_output[0]; // Broadcast sum gradient
+                    }
+                }),
+            )
+        } else {
+            result
+        }
     }
 
     /// Mean of all elements
@@ -345,9 +429,27 @@ impl Tensor {
         let sum = self.sum();
         let count = self.numel() as f32;
         let data = sum.data.iter().map(|x| x / count).collect();
-        let mut result = Tensor::new(data, vec![1]);
-        // TODO: grad fn
-        result
+        let result = Tensor::new(data, vec![1]);
+
+        if self.requires_grad {
+            let self_grad = Rc::clone(&self.grad);
+            let result_grad = Rc::clone(&result.grad);
+
+            Self::with_grad(
+                result,
+                vec![self],
+                Box::new(move || {
+                    let grad_output = result_grad.borrow();
+                    let mut self_g = self_grad.borrow_mut();
+
+                    for i in 0..self_g.len() {
+                        self_g[i] += grad_output[0] / count; // Broadcast mean gradient
+                    }
+                }),
+            )
+        } else {
+            result
+        }
     }
 
     /// Transpose a 2D tensor
@@ -678,5 +780,97 @@ mod tests {
         assert_eq!(*y.grad.borrow(), vec![-4.0]);
 
         println!("✓ Complex expression test passed!");
+    }
+
+    #[test]
+    fn test_matmul_forward_and_gradients() {
+        // Test matrix multiplication: C = A @ B
+        // A: [2x3], B: [3x2] -> C: [2x2]
+        let a = Tensor::new(
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            vec![2, 3],
+        ).requires_grad(true);
+        
+        let b = Tensor::new(
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            vec![3, 2],
+        ).requires_grad(true);
+
+        let c = a.matmul(&b);
+
+        // Forward pass verification
+        // C[0,0] = 1*1 + 2*3 + 3*5 = 1 + 6 + 15 = 22
+        // C[0,1] = 1*2 + 2*4 + 3*6 = 2 + 8 + 18 = 28
+        // C[1,0] = 4*1 + 5*3 + 6*5 = 4 + 15 + 30 = 49
+        // C[1,1] = 4*2 + 5*4 + 6*6 = 8 + 20 + 36 = 64
+        assert_eq!(c.data, vec![22.0, 28.0, 49.0, 64.0]);
+        assert_eq!(c.shape, vec![2, 2]);
+
+        // Backward pass
+        c.backward();
+
+        // dL/dA = grad_output @ B^T
+        // grad_output = [[1, 1], [1, 1]]
+        // B^T = [[1, 3, 5], [2, 4, 6]]
+        // dL/dA = [[1*1 + 1*2, 1*3 + 1*4, 1*5 + 1*6],
+        //          [1*1 + 1*2, 1*3 + 1*4, 1*5 + 1*6]]
+        //       = [[3, 7, 11], [3, 7, 11]]
+        let a_grad = a.grad.borrow();
+        assert_eq!(*a_grad, vec![3.0, 7.0, 11.0, 3.0, 7.0, 11.0]);
+
+        // dL/dB = A^T @ grad_output
+        // A^T = [[1, 4], [2, 5], [3, 6]]
+        // grad_output = [[1, 1], [1, 1]]
+        // dL/dB = [[1*1 + 4*1, 1*1 + 4*1],
+        //          [2*1 + 5*1, 2*1 + 5*1],
+        //          [3*1 + 6*1, 3*1 + 6*1]]
+        //       = [[5, 5], [7, 7], [9, 9]]
+        let b_grad = b.grad.borrow();
+        assert_eq!(*b_grad, vec![5.0, 5.0, 7.0, 7.0, 9.0, 9.0]);
+
+        println!("✓ Matmul forward and gradients test passed!");
+    }
+
+    #[test]
+    fn test_matmul_chain() {
+        // Test chained matrix multiplication: D = (A @ B) @ C
+        let a = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]).requires_grad(true);
+        let b = Tensor::new(vec![2.0, 0.0, 0.0, 2.0], vec![2, 2]).requires_grad(true);
+        let c = Tensor::new(vec![1.0, 1.0, 1.0, 1.0], vec![2, 2]).requires_grad(true);
+
+        // First matmul: temp = A @ B
+        // [[1, 2], [3, 4]] @ [[2, 0], [0, 2]] = [[2, 4], [6, 8]]
+        let temp = a.matmul(&b);
+        assert_eq!(temp.data, vec![2.0, 4.0, 6.0, 8.0]);
+
+        // Second matmul: d = temp @ C
+        // [[2, 4], [6, 8]] @ [[1, 1], [1, 1]] = [[6, 6], [14, 14]]
+        let d = temp.matmul(&c);
+        assert_eq!(d.data, vec![6.0, 6.0, 14.0, 14.0]);
+
+        d.backward();
+
+        // Verify gradients exist (exact values would require detailed calculation)
+        let a_grad = a.grad.borrow();
+        let b_grad = b.grad.borrow();
+        let c_grad = c.grad.borrow();
+
+        // All gradients should be non-zero
+        assert!(a_grad.iter().all(|&g| g != 0.0));
+        assert!(b_grad.iter().all(|&g| g != 0.0));
+        assert!(c_grad.iter().all(|&g| g != 0.0));
+
+        println!("✓ Matmul chain test passed!");
+        println!("  a.grad = {:?}", *a_grad);
+        println!("  b.grad = {:?}", *b_grad);
+        println!("  c.grad = {:?}", *c_grad);
+    }
+
+    #[test]
+    #[should_panic(expected = "Self-matmul (x.matmul(&x)) is not yet supported")]
+    fn test_matmul_self_panic() {
+        // Test that self-matmul panics with appropriate message
+        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]).requires_grad(true);
+        let _result = x.matmul(&x);
     }
 }
