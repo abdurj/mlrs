@@ -63,15 +63,4 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    // #[test]
-    // fn test_matmul() {
-    //     // TODO: Test matrix multiplication
-    //     // Example: [[1,2],[3,4]] @ [[2,0],[1,2]] = [[4,4],[10,8]]
-    // }
-
-    // #[test]
-    // fn test_relu() {
-    //     // TODO: Test ReLU activation
-    //     // Example: relu([-2,-1,0,1,2]) = [0,0,0,1,2]
-    // }
 }
