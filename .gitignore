@@ -1,1 +1,61 @@
+# Rust build artifacts
 target/
+
+# Cargo lock file (include for binaries, ignore for libraries)
+Cargo.lock
+
+# Rust incremental compilation
+**/*.rs.bk
+*.pdb
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Debugging
+*.dSYM/
+
+# Profiling
+*.profraw
+*.profdata
+
+# Documentation build
+doc/
+
+# Backup files
+*.orig
+*.rej
+
+# Test coverage
+*.gcda
+*.gcno
+*.gcov
+tarpaulin-report.html
+cobertura.xml
+
+# Benchmark results
+target/criterion/
+*.csv
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Custom ignore
+.ignore/
