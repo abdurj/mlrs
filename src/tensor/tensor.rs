@@ -48,7 +48,7 @@ pub struct GraphNode {
 impl Tensor {
     /// Create a new tensor from data and shape
     pub fn new(data: Vec<f32>, shape: Vec<usize>) -> Self {
-        let numel = shape.iter().fold(1, |acc, &x| acc * x);
+        let numel = shape.iter().product();
         if numel != data.len() {
             panic!(
                 "Invalid shape: {:?} for data of length: {}",
@@ -73,7 +73,11 @@ impl Tensor {
 
     /// Helper to attach gradient tracking to a result tensor
     /// Takes parent tensors and a backward closure, sets up the computation graph
-    fn with_grad(mut result: Tensor, parents: Vec<&Tensor>, backward_fn: BackwardFn) -> Tensor {
+    pub(super) fn with_grad(
+        mut result: Tensor,
+        parents: Vec<&Tensor>,
+        backward_fn: BackwardFn,
+    ) -> Tensor {
         result.requires_grad = true;
 
         // Collect parent graph nodes (create Weak refs to avoid cycles)
@@ -139,7 +143,7 @@ impl Tensor {
 
     /// Create a tensor filled with zeros
     pub fn zeros(shape: Vec<usize>) -> Self {
-        let numel = shape.iter().fold(1, |acc, &x| acc * x);
+        let numel = shape.iter().product();
         let data = vec![0.0; numel];
 
         Tensor::new(data, shape)
@@ -147,7 +151,7 @@ impl Tensor {
 
     /// Create a tensor filled with ones
     pub fn ones(shape: Vec<usize>) -> Self {
-        let numel = shape.iter().fold(1, |acc, &x| acc * x);
+        let numel = shape.iter().product();
         let data = vec![1.0; numel];
 
         Tensor::new(data, shape)
@@ -187,20 +191,20 @@ impl Tensor {
             numel == self.numel,
             "Reshape error: total number of elements must remain the same."
         );
-        
+
         let result = Tensor::new(self.data.clone(), new_shape);
-        
+
         if self.requires_grad {
             let self_grad = Rc::clone(&self.grad);
             let result_grad = Rc::clone(&result.grad);
-            
+
             Self::with_grad(
                 result,
                 vec![self],
                 Box::new(move || {
                     let grad_output = result_grad.borrow();
                     let mut self_g = self_grad.borrow_mut();
-                    
+
                     // Gradient of reshape is just copying values (same memory layout)
                     for i in 0..grad_output.len() {
                         self_g[i] += grad_output[i];
@@ -214,8 +218,8 @@ impl Tensor {
 
     /// Matrix multiplication
     pub fn matmul(&self, other: &Tensor) -> Tensor {
-        // Use the gemm module for the actual matrix multiplication
-        let data = crate::gemm::matmul(&self.data, &self.shape, &other.data, &other.shape);
+        // Use the gemm kernel for the actual matrix multiplication
+        let data = super::kernels::gemm::matmul(&self.data, &self.shape, &other.data, &other.shape);
         let result = Tensor::new(data, vec![self.shape[0], other.shape[1]]);
 
         if self.requires_grad || other.requires_grad {
@@ -246,7 +250,7 @@ impl Tensor {
                     let mut other_g = other_grad.borrow_mut();
 
                     // dL/dA = grad_output @ B^T
-                    crate::gemm::matmul_backward_left(
+                    super::kernels::gemm::matmul_backward_left(
                         &grad_output,
                         &grad_shape,
                         &other_data,
@@ -255,7 +259,7 @@ impl Tensor {
                     );
 
                     // dL/dB = A^T @ grad_output
-                    crate::gemm::matmul_backward_right(
+                    super::kernels::gemm::matmul_backward_right(
                         &self_data,
                         &self_shape,
                         &grad_output,
@@ -419,7 +423,7 @@ impl Tensor {
     }
 
     /// Sum along a specific axis
-    /// 
+    ///
     /// # Arguments
     /// * `axis` - The axis to sum along (None means sum all elements)
     /// * `keepdims` - If true, keep the reduced dimension as size 1
@@ -429,7 +433,7 @@ impl Tensor {
                 // Sum all elements
                 let data = self.data.iter().cloned().sum();
                 let result = Tensor::new(vec![data], vec![1]);
-                
+
                 if self.requires_grad {
                     let self_grad = Rc::clone(&self.grad);
                     let result_grad = Rc::clone(&result.grad);
@@ -451,8 +455,13 @@ impl Tensor {
                 }
             }
             Some(ax) => {
-                assert!(ax < self.shape.len(), "Axis {} out of bounds for tensor with {} dimensions", ax, self.shape.len());
-                
+                assert!(
+                    ax < self.shape.len(),
+                    "Axis {} out of bounds for tensor with {} dimensions",
+                    ax,
+                    self.shape.len()
+                );
+
                 // Calculate output shape
                 let mut out_shape = Vec::new();
                 for (i, &dim) in self.shape.iter().enumerate() {
@@ -467,59 +476,62 @@ impl Tensor {
                 if out_shape.is_empty() {
                     out_shape.push(1);
                 }
-                
+
                 let out_numel = out_shape.iter().product();
                 let mut data = vec![0.0; out_numel];
-                
+
                 // Calculate strides
                 let mut strides = vec![1; self.shape.len()];
                 for i in (0..self.shape.len() - 1).rev() {
                     strides[i] = strides[i + 1] * self.shape[i + 1];
                 }
-                
+
                 // Sum along axis
                 let axis_size = self.shape[ax];
                 let outer_size: usize = self.shape[..ax].iter().product();
                 let inner_size: usize = self.shape[ax + 1..].iter().product();
-                
+
                 for outer in 0..outer_size {
                     for inner in 0..inner_size {
                         let mut sum = 0.0;
                         for axis_idx in 0..axis_size {
-                            let idx = outer * axis_size * inner_size + axis_idx * inner_size + inner;
+                            let idx =
+                                outer * axis_size * inner_size + axis_idx * inner_size + inner;
                             sum += self.data[idx];
                         }
                         let out_idx = outer * inner_size + inner;
                         data[out_idx] = sum;
                     }
                 }
-                
+
                 let result = Tensor::new(data, out_shape.clone());
-                
+
                 if self.requires_grad {
                     let self_grad = Rc::clone(&self.grad);
                     let result_grad = Rc::clone(&result.grad);
                     let self_shape = self.shape.clone();
-                    
+
                     Self::with_grad(
                         result,
                         vec![self],
                         Box::new(move || {
                             let grad_output = result_grad.borrow();
                             let mut self_g = self_grad.borrow_mut();
-                            
+
                             // Broadcast gradient back
                             let axis_size = self_shape[ax];
                             let outer_size: usize = self_shape[..ax].iter().product();
                             let inner_size: usize = self_shape[ax + 1..].iter().product();
-                            
+
                             for outer in 0..outer_size {
                                 for inner in 0..inner_size {
                                     let out_idx = outer * inner_size + inner;
                                     let grad_val = grad_output[out_idx];
-                                    
+
                                     for axis_idx in 0..axis_size {
-                                        let idx = outer * axis_size * inner_size + axis_idx * inner_size + inner;
+                                        let idx = outer * axis_size * inner_size
+                                            + axis_idx * inner_size
+                                            + inner;
                                         self_g[idx] += grad_val;
                                     }
                                 }
@@ -539,7 +551,7 @@ impl Tensor {
     }
 
     /// Mean along a specific axis
-    /// 
+    ///
     /// # Arguments
     /// * `axis` - The axis to take mean along (None means mean of all elements)
     /// * `keepdims` - If true, keep the reduced dimension as size 1
@@ -573,37 +585,44 @@ impl Tensor {
                 }
             }
             Some(ax) => {
-                assert!(ax < self.shape.len(), "Axis {} out of bounds for tensor with {} dimensions", ax, self.shape.len());
-                
+                assert!(
+                    ax < self.shape.len(),
+                    "Axis {} out of bounds for tensor with {} dimensions",
+                    ax,
+                    self.shape.len()
+                );
+
                 let sum = self.sum_axis(Some(ax), keepdims);
                 let count = self.shape[ax] as f32;
                 let data = sum.data.iter().map(|x| x / count).collect();
                 let result = Tensor::new(data, sum.shape.clone());
-                
+
                 if self.requires_grad {
                     let self_grad = Rc::clone(&self.grad);
                     let result_grad = Rc::clone(&result.grad);
                     let self_shape = self.shape.clone();
-                    
+
                     Self::with_grad(
                         result,
                         vec![self],
                         Box::new(move || {
                             let grad_output = result_grad.borrow();
                             let mut self_g = self_grad.borrow_mut();
-                            
+
                             // Broadcast gradient back, divided by count
                             let axis_size = self_shape[ax];
                             let outer_size: usize = self_shape[..ax].iter().product();
                             let inner_size: usize = self_shape[ax + 1..].iter().product();
-                            
+
                             for outer in 0..outer_size {
                                 for inner in 0..inner_size {
                                     let out_idx = outer * inner_size + inner;
                                     let grad_val = grad_output[out_idx] / count;
-                                    
+
                                     for axis_idx in 0..axis_size {
-                                        let idx = outer * axis_size * inner_size + axis_idx * inner_size + inner;
+                                        let idx = outer * axis_size * inner_size
+                                            + axis_idx * inner_size
+                                            + inner;
                                         self_g[idx] += grad_val;
                                     }
                                 }
@@ -631,18 +650,18 @@ impl Tensor {
         }
 
         let result = Tensor::new(data, vec![cols, rows]);
-        
+
         if self.requires_grad {
             let self_grad = Rc::clone(&self.grad);
             let result_grad = Rc::clone(&result.grad);
-            
+
             Self::with_grad(
                 result,
                 vec![self],
                 Box::new(move || {
                     let grad_output = result_grad.borrow();
                     let mut self_g = self_grad.borrow_mut();
-                    
+
                     // Gradient of transpose is transpose of gradient
                     // grad_output has shape [cols, rows], need to transpose back to [rows, cols]
                     for i in 0..cols {
@@ -1061,17 +1080,17 @@ mod tests {
         // Test reshape: no computation, just view change
         // Gradient should flow through unchanged
         let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]).requires_grad(true);
-        
+
         // Reshape from [2, 3] to [3, 2]
         let y = x.reshape(vec![3, 2]);
         assert_eq!(y.shape, vec![3, 2]);
         assert_eq!(y.data, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]); // Same data
-        
+
         // Chain with another operation to make gradient non-uniform
         let z = y.mul_scalar(2.0); // z = 2y
-        
+
         z.backward();
-        
+
         // Gradient through reshape and mul_scalar: dz/dx = 2.0 for all elements
         let x_grad = x.grad.borrow();
         assert_eq!(*x_grad, vec![2.0, 2.0, 2.0, 2.0, 2.0, 2.0]);
@@ -1082,7 +1101,7 @@ mod tests {
         // Test transpose: swap dimensions
         // Gradient should be transposed back
         let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]).requires_grad(true);
-        
+
         // Transpose from [2, 3] to [3, 2]
         // Original:  [[1, 2, 3],
         //             [4, 5, 6]]
@@ -1092,9 +1111,9 @@ mod tests {
         let y = x.transpose();
         assert_eq!(y.shape, vec![3, 2]);
         assert_eq!(y.data, vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
-        
+
         y.backward();
-        
+
         // Gradient of transpose is transpose, so all gradients should be 1.0
         let x_grad = x.grad.borrow();
         assert_eq!(*x_grad, vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
@@ -1104,16 +1123,16 @@ mod tests {
     fn test_transpose_chain() {
         // Test transpose in a chain: z = (x^T)^T should equal x
         let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]).requires_grad(true);
-        
+
         let y = x.transpose(); // [2, 2] -> [2, 2]
         let z = y.transpose(); // [2, 2] -> [2, 2]
-        
+
         // Double transpose should give back original
         assert_eq!(z.data, x.data);
         assert_eq!(z.shape, x.shape);
-        
+
         z.backward();
-        
+
         // Gradient should flow through both transposes
         let x_grad = x.grad.borrow();
         assert_eq!(*x_grad, vec![1.0, 1.0, 1.0, 1.0]);
@@ -1124,16 +1143,16 @@ mod tests {
         // Test reshape combined with actual computation
         let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], vec![4]).requires_grad(true);
         let y = Tensor::new(vec![2.0, 3.0, 4.0, 5.0], vec![4]).requires_grad(true);
-        
+
         // Reshape and then add
         let x_reshaped = x.reshape(vec![2, 2]);
         let y_reshaped = y.reshape(vec![2, 2]);
         let z = x_reshaped.add(&y_reshaped);
-        
+
         assert_eq!(z.data, vec![3.0, 5.0, 7.0, 9.0]);
-        
+
         z.backward();
-        
+
         // Gradients should be all 1s (from add)
         let x_grad = x.grad.borrow();
         let y_grad = y.grad.borrow();
@@ -1147,14 +1166,14 @@ mod tests {
         // [[1, 2, 3],
         //  [4, 5, 6]]
         let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]).requires_grad(true);
-        
+
         // Sum along axis 0: [5, 7, 9]
         let y = x.sum_axis(Some(0), false);
         assert_eq!(y.shape, vec![3]);
         assert_eq!(y.data, vec![5.0, 7.0, 9.0]);
-        
+
         y.backward();
-        
+
         // Gradient should be all 1s (each element contributes to one output)
         let x_grad = x.grad.borrow();
         assert_eq!(*x_grad, vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
@@ -1164,14 +1183,14 @@ mod tests {
     fn test_sum_axis_keepdims() {
         // Test sum along axis with keepdims
         let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]).requires_grad(true);
-        
+
         // Sum along axis 0 with keepdims: [[5, 7, 9]]
         let y = x.sum_axis(Some(0), true);
         assert_eq!(y.shape, vec![1, 3]);
         assert_eq!(y.data, vec![5.0, 7.0, 9.0]);
-        
+
         y.backward();
-        
+
         let x_grad = x.grad.borrow();
         assert_eq!(*x_grad, vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
     }
@@ -1180,14 +1199,14 @@ mod tests {
     fn test_sum_axis_1() {
         // Test sum along axis 1 (columns)
         let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]).requires_grad(true);
-        
+
         // Sum along axis 1: [6, 15]
         let y = x.sum_axis(Some(1), false);
         assert_eq!(y.shape, vec![2]);
         assert_eq!(y.data, vec![6.0, 15.0]);
-        
+
         y.backward();
-        
+
         // Gradient should be all 1s
         let x_grad = x.grad.borrow();
         assert_eq!(*x_grad, vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
@@ -1198,14 +1217,14 @@ mod tests {
     fn test_sum_axis_1_keepdims() {
         // Test sum along axis 1 with keepdims
         let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]).requires_grad(true);
-        
+
         // With keepdims
         let y = x.sum_axis(Some(1), true);
         assert_eq!(y.shape, vec![2, 1]);
         assert_eq!(y.data, vec![6.0, 15.0]);
-        
+
         y.backward();
-        
+
         let x_grad = x.grad.borrow();
         assert_eq!(*x_grad, vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
     }
@@ -1214,14 +1233,14 @@ mod tests {
     fn test_mean_axis() {
         // Test mean along axis 0
         let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]).requires_grad(true);
-        
+
         // Mean along axis 0: [2.5, 3.5, 4.5]
         let y = x.mean_axis(Some(0), false);
         assert_eq!(y.shape, vec![3]);
         assert_eq!(y.data, vec![2.5, 3.5, 4.5]);
-        
+
         y.backward();
-        
+
         // Gradient should be 0.5 for each element (1 / axis_size)
         let x_grad = x.grad.borrow();
         assert_eq!(*x_grad, vec![0.5, 0.5, 0.5, 0.5, 0.5, 0.5]);
@@ -1231,14 +1250,14 @@ mod tests {
     fn test_mean_axis_keepdims() {
         // Test mean along axis with keepdims
         let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]).requires_grad(true);
-        
+
         // Mean along axis 0 with keepdims: [[2.5, 3.5, 4.5]]
         let y = x.mean_axis(Some(0), true);
         assert_eq!(y.shape, vec![1, 3]);
         assert_eq!(y.data, vec![2.5, 3.5, 4.5]);
-        
+
         y.backward();
-        
+
         let x_grad = x.grad.borrow();
         assert_eq!(*x_grad, vec![0.5, 0.5, 0.5, 0.5, 0.5, 0.5]);
     }
@@ -1247,17 +1266,17 @@ mod tests {
     fn test_mean_axis_1() {
         // Test mean along axis 1
         let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]).requires_grad(true);
-        
+
         // Mean along axis 1: [2.0, 5.0]
         let y = x.mean_axis(Some(1), false);
         assert_eq!(y.shape, vec![2]);
         assert_eq!(y.data, vec![2.0, 5.0]);
-        
+
         y.backward();
-        
+
         // Gradient should be 1/3 for each element
         let x_grad = x.grad.borrow();
-        let expected = vec![1.0/3.0; 6];
+        let expected = vec![1.0 / 3.0; 6];
         for (a, b) in x_grad.iter().zip(expected.iter()) {
             assert!((a - b).abs() < 1e-6);
         }
@@ -1269,17 +1288,17 @@ mod tests {
         // [[1, 2],
         //  [3, 4]]
         let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]).requires_grad(true);
-        
+
         // Sum along axis 0: [1+3, 2+4] = [4, 6]
         let y = x.sum_axis(Some(0), false);
         assert_eq!(y.data, vec![4.0, 6.0]);
-        
+
         // Multiply by scalar: [4*2, 6*2] = [8, 12]
         let z = y.mul_scalar(2.0);
         assert_eq!(z.data, vec![8.0, 12.0]);
-        
+
         z.backward();
-        
+
         // Gradient: 2.0 for all elements (from mul_scalar and sum)
         let x_grad = x.grad.borrow();
         assert_eq!(*x_grad, vec![2.0, 2.0, 2.0, 2.0]);
@@ -1290,18 +1309,21 @@ mod tests {
         // Test sum on 3D tensor
         // Shape: [2, 2, 3] = 12 elements
         let x = Tensor::new(
-            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
-            vec![2, 2, 3]
-        ).requires_grad(true);
-        
+            vec![
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+            ],
+            vec![2, 2, 3],
+        )
+        .requires_grad(true);
+
         // Sum along axis 2 (last axis)
         let y = x.sum_axis(Some(2), false);
         assert_eq!(y.shape, vec![2, 2]);
         // [1+2+3, 4+5+6, 7+8+9, 10+11+12] = [6, 15, 24, 33]
         assert_eq!(y.data, vec![6.0, 15.0, 24.0, 33.0]);
-        
+
         y.backward();
-        
+
         // All gradients should be 1.0
         let x_grad = x.grad.borrow();
         assert_eq!(*x_grad, vec![1.0; 12]);
@@ -1311,10 +1333,10 @@ mod tests {
     fn test_backward_compatibility() {
         // Ensure old sum() and mean() still work
         let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], vec![4]).requires_grad(true);
-        
+
         let s = x.sum();
         assert_eq!(s.data, vec![10.0]);
-        
+
         let m = x.mean();
         assert_eq!(m.data, vec![2.5]);
     }
