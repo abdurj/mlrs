@@ -78,28 +78,68 @@ impl Tensor {
 
     /// Helper to attach gradient tracking to a result tensor
     /// Takes parent tensors and a backward closure, sets up the computation graph
-    fn with_grad(
-        mut result: Tensor,
-        parents: Vec<&Tensor>,
-        backward_fn: BackwardFn,
-    ) -> Tensor {
+    fn with_grad(mut result: Tensor, parents: Vec<&Tensor>, backward_fn: BackwardFn) -> Tensor {
         result.requires_grad = true;
-        
+
         // Collect parent graph nodes (create Weak refs to avoid cycles)
         let parent_nodes: Vec<Weak<GraphNode>> = parents
             .iter()
             .filter_map(|p| p.graph_node.as_ref().map(|n| Rc::downgrade(n)))
             .collect();
-        
+
         // Create graph node for this result
         let node = Rc::new(GraphNode {
             grad: Rc::clone(&result.grad),
             backward_fn,
             prev: parent_nodes,
         });
-        
+
         result.graph_node = Some(node);
         result
+    }
+
+    /// Helper for binary operations with gradient tracking
+    /// Takes two tensors, result data, and a closure that computes gradients
+    fn binary_op<F>(&self, other: &Tensor, result_data: Vec<f32>, grad_fn: F) -> Tensor
+    where
+        F: Fn(&[f32], &mut [f32], &mut [f32]) + 'static,
+    {
+        let result = Tensor::new(result_data, self.shape.clone());
+
+        if self.requires_grad || other.requires_grad {
+            let self_grad = Rc::clone(&self.grad);
+            let other_grad = Rc::clone(&other.grad);
+            let result_grad = Rc::clone(&result.grad);
+
+            // Check if self and other share the same gradient (e.g., x.add(&x))
+            let same_tensor = Rc::ptr_eq(&self_grad, &other_grad);
+
+            Self::with_grad(
+                result,
+                vec![self, other],
+                Box::new(move || {
+                    let grad_output = result_grad.borrow();
+
+                    if same_tensor {
+                        // Both inputs are the same tensor - accumulate once
+                        let mut grad = self_grad.borrow_mut();
+                        let mut temp_grad = vec![0.0; grad.len()];
+                        grad_fn(&grad_output, &mut grad, &mut temp_grad);
+                        // Add the "other" gradients to self (since they're the same)
+                        for i in 0..grad.len() {
+                            grad[i] += temp_grad[i];
+                        }
+                    } else {
+                        // Different tensors - borrow both mutably
+                        let mut self_g = self_grad.borrow_mut();
+                        let mut other_g = other_grad.borrow_mut();
+                        grad_fn(&grad_output, &mut self_g, &mut other_g);
+                    }
+                }),
+            )
+        } else {
+            result
+        }
     }
 
     /// Create a tensor filled with zeros
@@ -180,27 +220,73 @@ impl Tensor {
             .zip(&other.data)
             .map(|(a, b)| a + b)
             .collect();
-        
+
+        self.binary_op(other, data, |grad_output, self_grad, other_grad| {
+            for i in 0..grad_output.len() {
+                self_grad[i] += grad_output[i];
+                other_grad[i] += grad_output[i];
+            }
+        })
+    }
+
+    /// Element-wise subtraction
+    pub fn sub(&self, other: &Tensor) -> Tensor {
+        assert_eq!(self.shape, other.shape, "Shape mismatch");
+        let data: Vec<f32> = self
+            .data
+            .iter()
+            .zip(&other.data)
+            .map(|(a, b)| a - b)
+            .collect();
+
+        self.binary_op(other, data, |grad_output, self_grad, other_grad| {
+            for i in 0..grad_output.len() {
+                self_grad[i] += grad_output[i];
+                other_grad[i] -= grad_output[i]; // Note: negative for subtraction
+            }
+        })
+    }
+
+    /// Element-wise multiplication
+    pub fn mul(&self, other: &Tensor) -> Tensor {
+        assert_eq!(self.shape, other.shape, "Shape mismatch");
+        let data: Vec<f32> = self
+            .data
+            .iter()
+            .zip(&other.data)
+            .map(|(a, b)| a * b)
+            .collect();
+
+        // Capture input values for gradient computation
+        let self_data = self.data.clone();
+        let other_data = other.data.clone();
+
+        self.binary_op(other, data, move |grad_output, self_grad, other_grad| {
+            for i in 0..grad_output.len() {
+                self_grad[i] += grad_output[i] * other_data[i]; // d/dx(x*y) = y
+                other_grad[i] += grad_output[i] * self_data[i]; // d/dy(x*y) = x
+            }
+        })
+    }
+
+    /// Scalar multiplication
+    pub fn mul_scalar(&self, scalar: f32) -> Tensor {
+        let data: Vec<f32> = self.data.iter().map(|a| a * scalar).collect();
         let result = Tensor::new(data, self.shape.clone());
-        
-        if self.requires_grad || other.requires_grad {
-            // Capture grad Rc references - these are cheap to clone (just increments ref count)
+
+        if self.requires_grad {
             let self_grad = Rc::clone(&self.grad);
-            let other_grad = Rc::clone(&other.grad);
             let result_grad = Rc::clone(&result.grad);
-            
-            // Create backward closure and attach to result
+
             Self::with_grad(
                 result,
-                vec![self, other],
+                vec![self],
                 Box::new(move || {
                     let grad_output = result_grad.borrow();
                     let mut self_g = self_grad.borrow_mut();
-                    let mut other_g = other_grad.borrow_mut();
-                    
+
                     for i in 0..grad_output.len() {
-                        self_g[i] += grad_output[i];
-                        other_g[i] += grad_output[i];
+                        self_g[i] += grad_output[i] * scalar; // d/dx(x*c) = c
                     }
                 }),
             )
@@ -209,60 +295,23 @@ impl Tensor {
         }
     }
 
-    /// Element-wise subtraction
-    pub fn sub(&self, other: &Tensor) -> Tensor {
-        assert_eq!(self.shape, other.shape, "Shape mismatch");
-        let data = self
-            .data
-            .iter()
-            .zip(&other.data)
-            .map(|(a, b)| a - b)
-            .collect();
-        let mut result = Tensor::new(data, self.shape.clone());
-        // TODO: Assert shapes match
-        // TODO: Zip iterators and subtract element-wise
-        result
-    }
-
-    /// Element-wise multiplication
-    pub fn mul(&self, other: &Tensor) -> Tensor {
-        assert_eq!(self.shape, other.shape, "Shape mismatch");
-        let data = self
-            .data
-            .iter()
-            .zip(&other.data)
-            .map(|(a, b)| a * b)
-            .collect();
-        let mut result = Tensor::new(data, self.shape.clone());
-        // TODO: grad fn
-        todo!("Implement mul")
-    }
-
-    /// Scalar multiplication
-    pub fn mul_scalar(&self, scalar: f32) -> Tensor {
-        let data = self.data.iter().map(|a| a * scalar).collect();
-        let mut result = Tensor::new(data, self.shape.clone());
-        // TODO: grad fn
-        todo!("Implement mul_scalar")
-    }
-
     /// ReLU activation: max(0, x)
     pub fn relu(&self) -> Tensor {
         let data = self.data.iter().map(|x| x.max(0.0)).collect();
         let result = Tensor::new(data, self.shape.clone());
-        
+
         if self.requires_grad {
             let self_grad = Rc::clone(&self.grad);
             let result_grad = Rc::clone(&result.grad);
             let input_data = self.data.clone(); // Clone Vec<f32> for the mask
-            
+
             Self::with_grad(
                 result,
                 vec![self],
                 Box::new(move || {
                     let grad_output = result_grad.borrow();
                     let mut self_g = self_grad.borrow_mut();
-                    
+
                     for i in 0..grad_output.len() {
                         if input_data[i] > 0.0 {
                             self_g[i] += grad_output[i];
@@ -307,13 +356,13 @@ impl Tensor {
         let rows = self.shape[0];
         let cols = self.shape[1];
         let mut data = vec![0.0; self.numel()];
-        
+
         for i in 0..rows {
             for j in 0..cols {
                 data[j * rows + i] = self.data[i * cols + j];
             }
         }
-        
+
         Tensor::new(data, vec![cols, rows])
     }
 
@@ -326,17 +375,17 @@ impl Tensor {
                 *g = 1.0;
             }
         }
-        
+
         // Get the graph node for this tensor
         let root = match &self.graph_node {
             Some(node) => Rc::clone(node),
             None => return, // No graph node means no gradients to compute
         };
-        
+
         // Build topological sort using DFS on GraphNodes
         let mut topo: Vec<Rc<GraphNode>> = Vec::new();
         let mut visited = HashSet::new();
-        
+
         fn build_topo(
             v: &Rc<GraphNode>,
             visited: &mut HashSet<*const GraphNode>,
@@ -347,17 +396,17 @@ impl Tensor {
                 visited.insert(ptr);
                 // Upgrade Weak references to Rc for traversal
                 for weak_child in &v.prev {
-                    if let Some(child) = weak_child.upgrade() {
-                        build_topo(&child, visited, topo);
-                    }
-                    // If upgrade fails, the parent was already dropped - skip it
+                    let child = weak_child
+                        .upgrade()
+                        .expect("Parent in graph dropped unexpectedly");
+                    build_topo(&child, visited, topo);
                 }
                 topo.push(Rc::clone(v));
             }
         }
-        
+
         build_topo(&root, &mut visited, &mut topo);
-        
+
         // Call backward functions in reverse topological order
         for node in topo.iter().rev() {
             (node.backward_fn)();
@@ -406,18 +455,18 @@ mod tests {
         let x = Tensor::new(vec![2.0], vec![1]).requires_grad(true);
         let y = Tensor::new(vec![3.0], vec![1]).requires_grad(true);
         let z = x.add(&y);
-        
+
         // Before backward, gradients should be zero
         assert_eq!(*x.grad.borrow(), vec![0.0]);
         assert_eq!(*y.grad.borrow(), vec![0.0]);
-        
+
         // Call backward
         z.backward();
-        
+
         // After backward, gradients should be 1.0 (gradient flows equally)
         assert_eq!(*x.grad.borrow(), vec![1.0]);
         assert_eq!(*y.grad.borrow(), vec![1.0]);
-        
+
         println!("✓ Simple add backward test passed!");
     }
 
@@ -429,17 +478,17 @@ mod tests {
         // dz/dy = 1
         let x = Tensor::new(vec![2.0], vec![1]).requires_grad(true);
         let y = Tensor::new(vec![3.0], vec![1]).requires_grad(true);
-        
-        let temp = x.add(&y);  // temp = x + y
-        let z = temp.add(&x);   // z = temp + x = (x + y) + x
-        
+
+        let temp = x.add(&y); // temp = x + y
+        let z = temp.add(&x); // z = temp + x = (x + y) + x
+
         z.backward();
-        
+
         // x appears twice, so gradient should be 2.0
         assert_eq!(*x.grad.borrow(), vec![2.0]);
         // y appears once, so gradient should be 1.0
         assert_eq!(*y.grad.borrow(), vec![1.0]);
-        
+
         println!("✓ Chain backward test passed!");
         println!("  x.grad = {:?} (expected 2.0)", x.grad.borrow());
         println!("  y.grad = {:?} (expected 1.0)", y.grad.borrow());
@@ -451,16 +500,16 @@ mod tests {
         // relu gradient: 1 where x > 0, else 0
         let x = Tensor::new(vec![-1.0, 0.0, 1.0, 2.0], vec![4]).requires_grad(true);
         let z = x.relu();
-        
+
         z.backward();
-        
+
         // Gradient should be 0 for x <= 0, and 1 for x > 0
         let x_grad = x.grad.borrow();
         assert_eq!(x_grad[0], 0.0); // x = -1.0, gradient = 0
         assert_eq!(x_grad[1], 0.0); // x = 0.0, gradient = 0
         assert_eq!(x_grad[2], 1.0); // x = 1.0, gradient = 1
         assert_eq!(x_grad[3], 1.0); // x = 2.0, gradient = 1
-        
+
         println!("✓ ReLU backward test passed!");
         println!("  Input: [-1.0, 0.0, 1.0, 2.0]");
         println!("  Gradients: {:?}", *x_grad);
@@ -472,23 +521,23 @@ mod tests {
         // Tests composition of operations
         let x = Tensor::new(vec![-1.0, 2.0], vec![2]).requires_grad(true);
         let y = Tensor::new(vec![0.5, -1.0], vec![2]).requires_grad(true);
-        
-        let sum = x.add(&y);    // [-0.5, 1.0]
-        let z = sum.relu();      // [0.0, 1.0]
-        
+
+        let sum = x.add(&y); // [-0.5, 1.0]
+        let z = sum.relu(); // [0.0, 1.0]
+
         z.backward();
-        
+
         let x_grad = x.grad.borrow();
         let y_grad = y.grad.borrow();
-        
+
         // First element: -1.0 + 0.5 = -0.5, relu -> 0, so gradient = 0
         assert_eq!(x_grad[0], 0.0);
         assert_eq!(y_grad[0], 0.0);
-        
+
         // Second element: 2.0 + (-1.0) = 1.0, relu -> 1.0, so gradient = 1
         assert_eq!(x_grad[1], 1.0);
         assert_eq!(y_grad[1], 1.0);
-        
+
         println!("✓ Multiple operations backward test passed!");
         println!("  x + y = [-0.5, 1.0]");
         println!("  relu(x + y) = [0.0, 1.0]");
@@ -500,26 +549,134 @@ mod tests {
     fn test_gradient_accumulation() {
         // Test that gradients accumulate correctly across multiple backward passes
         let mut x = Tensor::new(vec![1.0], vec![1]).requires_grad(true);
-        
+
         // First operation
-        let y1 = x.add(&x);  // y1 = 2x
+        let y1 = x.add(&x); // y1 = 2x
         y1.backward();
-        
+
         // Check gradient after first backward
         let grad_after_first = x.grad.borrow().clone();
         assert_eq!(grad_after_first, vec![2.0]);
-        
+
         // Zero out gradients
         x.zero_grad();
         assert_eq!(*x.grad.borrow(), vec![0.0]);
-        
+
         // Second operation
         let y2 = x.add(&x);
         y2.backward();
-        
+
         // Should be same as before (gradients were zeroed)
         assert_eq!(*x.grad.borrow(), vec![2.0]);
-        
+
         println!("✓ Gradient accumulation test passed!");
+    }
+
+    #[test]
+    fn test_binary_ops_forward_and_gradients() {
+        // Test all binary operations: add, sub, mul with forward and backward passes
+        let mut x = Tensor::new(vec![2.0, 3.0, 4.0], vec![3]).requires_grad(true);
+        let mut y = Tensor::new(vec![1.0, 2.0, 3.0], vec![3]).requires_grad(true);
+
+        // Test addition: z = x + y
+        let z_add = x.add(&y);
+        assert_eq!(z_add.data, vec![3.0, 5.0, 7.0]);
+        z_add.backward();
+        assert_eq!(*x.grad.borrow(), vec![1.0, 1.0, 1.0]); // dz/dx = 1
+        assert_eq!(*y.grad.borrow(), vec![1.0, 1.0, 1.0]); // dz/dy = 1
+
+        // Reset gradients
+        x.zero_grad();
+        y.zero_grad();
+
+        // Test subtraction: z = x - y
+        let z_sub = x.sub(&y);
+        assert_eq!(z_sub.data, vec![1.0, 1.0, 1.0]);
+        z_sub.backward();
+        assert_eq!(*x.grad.borrow(), vec![1.0, 1.0, 1.0]); // dz/dx = 1
+        assert_eq!(*y.grad.borrow(), vec![-1.0, -1.0, -1.0]); // dz/dy = -1
+
+        // Reset gradients
+        x.zero_grad();
+        y.zero_grad();
+
+        // Test multiplication: z = x * y
+        // z = [2*1, 3*2, 4*3] = [2, 6, 12]
+        let z_mul = x.mul(&y);
+        assert_eq!(z_mul.data, vec![2.0, 6.0, 12.0]);
+        z_mul.backward();
+        // dz/dx = y = [1, 2, 3]
+        assert_eq!(*x.grad.borrow(), vec![1.0, 2.0, 3.0]);
+        // dz/dy = x = [2, 3, 4]
+        assert_eq!(*y.grad.borrow(), vec![2.0, 3.0, 4.0]);
+
+        println!("✓ Binary ops forward and gradients test passed!");
+    }
+
+    #[test]
+    fn test_mul_scalar() {
+        // Test scalar multiplication: z = x * c
+        let x = Tensor::new(vec![2.0, 3.0, 4.0], vec![3]).requires_grad(true);
+        let scalar = 2.5;
+
+        let z = x.mul_scalar(scalar);
+        assert_eq!(z.data, vec![5.0, 7.5, 10.0]);
+
+        z.backward();
+        // dz/dx = scalar = 2.5 for all elements
+        assert_eq!(*x.grad.borrow(), vec![2.5, 2.5, 2.5]);
+
+        println!("✓ Scalar multiplication test passed!");
+    }
+
+    #[test]
+    fn test_self_binary_ops() {
+        // Test operations where both operands are the same tensor
+        let mut x = Tensor::new(vec![2.0, 3.0], vec![2]).requires_grad(true);
+
+        // z = x + x = 2x
+        let z = x.add(&x);
+        assert_eq!(z.data, vec![4.0, 6.0]);
+        z.backward();
+        // dz/dx = 2 (since x appears twice)
+        assert_eq!(*x.grad.borrow(), vec![2.0, 2.0]);
+
+        x.zero_grad();
+
+        // z = x * x = x^2
+        let z_sq = x.mul(&x);
+        assert_eq!(z_sq.data, vec![4.0, 9.0]);
+        z_sq.backward();
+        // dz/dx = 2x = [4, 6]
+        assert_eq!(*x.grad.borrow(), vec![4.0, 6.0]);
+
+        println!("✓ Self binary ops test passed!");
+    }
+
+    #[test]
+    fn test_complex_expression() {
+        // Test a more complex expression: z = (x + y) * (x - y)
+        // This is equivalent to: z = x^2 - y^2
+        let x = Tensor::new(vec![3.0], vec![1]).requires_grad(true);
+        let y = Tensor::new(vec![2.0], vec![1]).requires_grad(true);
+
+        let sum = x.add(&y); // sum = 5
+        let diff = x.sub(&y); // diff = 1
+        let z = sum.mul(&diff); // z = 5 * 1 = 5
+
+        assert_eq!(z.data, vec![5.0]);
+
+        z.backward();
+
+        // dz/dx = d/dx(x^2 - y^2) = 2x = 6
+        // Manual computation:
+        // z = (x+y)(x-y) = x^2 - y^2
+        // dz/dx = 2x
+        assert_eq!(*x.grad.borrow(), vec![6.0]);
+
+        // dz/dy = d/dy(x^2 - y^2) = -2y = -4
+        assert_eq!(*y.grad.borrow(), vec![-4.0]);
+
+        println!("✓ Complex expression test passed!");
     }
 }
