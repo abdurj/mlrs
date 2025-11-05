@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashSet;
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
 
 use rand::distributions::Uniform;
 use rand::prelude::Distribution;
@@ -41,8 +41,8 @@ pub struct GraphNode {
     grad: Rc<RefCell<Vec<f32>>>,
     // Backward function for this operation
     backward_fn: BackwardFn,
-    // Parent nodes in the computation graph (Weak to avoid cycles)
-    prev: Vec<Weak<GraphNode>>,
+    // Parent nodes in the computation graph (Rc since DAG has no cycles)
+    prev: Vec<Rc<GraphNode>>,
 }
 
 impl Tensor {
@@ -73,17 +73,17 @@ impl Tensor {
 
     /// Helper to attach gradient tracking to a result tensor
     /// Takes parent tensors and a backward closure, sets up the computation graph
-    pub(super) fn with_grad(
+    pub fn with_grad(
         mut result: Tensor,
         parents: Vec<&Tensor>,
         backward_fn: BackwardFn,
     ) -> Tensor {
         result.requires_grad = true;
 
-        // Collect parent graph nodes (create Weak refs to avoid cycles)
-        let parent_nodes: Vec<Weak<GraphNode>> = parents
+        // Collect parent graph nodes (use Rc since DAG has no cycles)
+        let parent_nodes: Vec<Rc<GraphNode>> = parents
             .iter()
-            .filter_map(|p| p.graph_node.as_ref().map(|n| Rc::downgrade(n)))
+            .filter_map(|p| p.graph_node.as_ref().map(|n| Rc::clone(n)))
             .collect();
 
         // Create graph node for this result
@@ -836,12 +836,9 @@ impl Tensor {
             let ptr = Rc::as_ptr(v);
             if !visited.contains(&ptr) {
                 visited.insert(ptr);
-                // Upgrade Weak references to Rc for traversal
-                for weak_child in &v.prev {
-                    let child = weak_child
-                        .upgrade()
-                        .expect("Parent in graph dropped unexpectedly");
-                    build_topo(&child, visited, topo);
+                // Traverse parent nodes (already Rc since DAG has no cycles)
+                for child in &v.prev {
+                    build_topo(child, visited, topo);
                 }
                 topo.push(Rc::clone(v));
             }
