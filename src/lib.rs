@@ -9,5 +9,5 @@ pub mod optim;
 
 // Re-export commonly used types for convenience
 pub use tensor::Tensor;
-pub use nn::{Linear, SimpleNet};
+pub use nn::*;
 pub use optim::SGD;

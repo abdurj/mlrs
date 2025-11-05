@@ -1,4 +1,37 @@
-use rust_nn::{SimpleNet, SGD, Tensor};
+use rust_nn::{Linear, Tensor, SGD};
+
+/// Simple 3-layer neural network for MNIST
+pub struct SimpleNet {
+    fc1: Linear,
+    fc2: Linear,
+    fc3: Linear,
+}
+
+impl SimpleNet {
+    /// Create a new network with architecture: 784 -> 128 -> 64 -> 10
+    pub fn new() -> Self {
+        // TODO: Create three linear layers
+        // fc1: 784 -> 128 (for 28x28 images)
+        // fc2: 128 -> 64
+        // fc3: 64 -> 10 (10 classes)
+        todo!("Implement SimpleNet::new")
+    }
+
+    /// Forward pass through the network
+    pub fn forward(&self, x: &Tensor) -> Tensor {
+        // TODO: Pass through fc1, apply ReLU
+        // TODO: Pass through fc2, apply ReLU
+        // TODO: Pass through fc3 (no activation on output)
+        todo!("Implement SimpleNet::forward")
+    }
+
+    /// Get all parameters from all layers
+    pub fn parameters(&mut self) -> Vec<&mut Tensor> {
+        // TODO: Collect parameters from all three layers
+        // Hint: Use extend to combine vectors
+        todo!("Implement SimpleNet::parameters")
+    }
+}
 
 /// Generate dummy training data for testing
 fn generate_dummy_data(n_samples: usize) -> (Vec<Tensor>, Vec<usize>) {
@@ -62,5 +95,4 @@ fn main() {
 }
 
 #[cfg(test)]
-mod tests {
-}
+mod tests {}

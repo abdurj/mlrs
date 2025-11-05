@@ -357,6 +357,138 @@ impl Tensor {
         }
     }
 
+    /// Element-wise power
+    ///
+    /// Computes self^exponent for each element
+    /// Gradient: d/dx(x^n) = n * x^(n-1)
+    pub fn pow(&self, exponent: f32) -> Tensor {
+        let data: Vec<f32> = self.data.iter().map(|x| x.powf(exponent)).collect();
+        let result = Tensor::new(data, self.shape.clone());
+
+        if self.requires_grad {
+            let self_grad = Rc::clone(&self.grad);
+            let result_grad = Rc::clone(&result.grad);
+            let input_data = self.data.clone();
+
+            Self::with_grad(
+                result,
+                vec![self],
+                Box::new(move || {
+                    let grad_output = result_grad.borrow();
+                    let mut self_g = self_grad.borrow_mut();
+
+                    for i in 0..grad_output.len() {
+                        // d/dx(x^n) = n * x^(n-1)
+                        self_g[i] += grad_output[i] * exponent * input_data[i].powf(exponent - 1.0);
+                    }
+                }),
+            )
+        } else {
+            result
+        }
+    }
+
+    /// Broadcast addition (2D only)
+    ///
+    /// Adds `other` to `self` with broadcasting rules for 2D tensors:
+    /// - If shapes are identical [M, N] + [M, N], performs element-wise addition
+    /// - If `other` has shape [1, N] and `self` has shape [M, N], broadcasts `other` across all M rows
+    pub fn broadcast_add(&self, other: &Tensor) -> Tensor {
+        assert_eq!(
+            self.shape.len(),
+            2,
+            "broadcast_add only supports 2D tensors"
+        );
+        assert_eq!(
+            other.shape.len(),
+            2,
+            "broadcast_add only supports 2D tensors"
+        );
+        assert_eq!(
+            self.shape[1], other.shape[1],
+            "Column dimensions must match"
+        );
+
+        let rows = self.shape[0];
+        let cols = self.shape[1];
+
+        // Check if it's a broadcast case: [M, N] + [1, N]
+        let is_broadcast = other.shape[0] == 1;
+
+        if !is_broadcast && self.shape[0] != other.shape[0] {
+            panic!(
+                "Incompatible shapes for broadcast_add: {:?} and {:?}",
+                self.shape, other.shape
+            );
+        }
+
+        let mut data = vec![0.0; self.numel()];
+
+        if is_broadcast {
+            // Broadcasting case: [M, N] + [1, N]
+            for i in 0..rows {
+                for j in 0..cols {
+                    let idx = i * cols + j;
+                    data[idx] = self.data[idx] + other.data[j];
+                }
+            }
+        } else {
+            // Same shape case: [M, N] + [M, N]
+            for i in 0..self.numel() {
+                data[i] = self.data[i] + other.data[i];
+            }
+        }
+
+        let result = Tensor::new(data, self.shape.clone());
+
+        if self.requires_grad || other.requires_grad {
+            let self_grad = Rc::clone(&self.grad);
+            let other_grad = Rc::clone(&other.grad);
+            let result_grad = Rc::clone(&result.grad);
+
+            // Simplification: Don't support self-broadcast_add (x.broadcast_add(&x))
+            assert!(
+                !Rc::ptr_eq(&self_grad, &other_grad),
+                "Self-broadcast_add (x.broadcast_add(&x)) is not supported"
+            );
+
+            Self::with_grad(
+                result,
+                vec![self, other],
+                Box::new(move || {
+                    let grad_output = result_grad.borrow();
+                    let mut self_g = self_grad.borrow_mut();
+                    let mut other_g = other_grad.borrow_mut();
+
+                    if is_broadcast {
+                        // Broadcast case: [M, N] + [1, N]
+                        // Gradient for self: 1:1 mapping
+                        for i in 0..grad_output.len() {
+                            self_g[i] += grad_output[i];
+                        }
+
+                        // Gradient for other: sum across the broadcast dimension (rows)
+                        for j in 0..cols {
+                            let mut sum = 0.0;
+                            for i in 0..rows {
+                                sum += grad_output[i * cols + j];
+                            }
+                            other_g[j] += sum;
+                        }
+                    } else {
+                        // Same shape: gradient flows equally
+                        for i in 0..grad_output.len() {
+                            self_g[i] += grad_output[i];
+                            other_g[i] += grad_output[i];
+                        }
+                    }
+                }),
+            )
+        } else {
+            result
+        }
+    }
+
     /// ReLU activation: max(0, x)
     pub fn relu(&self) -> Tensor {
         let data = self.data.iter().map(|x| x.max(0.0)).collect();
@@ -728,28 +860,34 @@ impl Tensor {
 mod tests {
     use super::*;
 
+    // ========================================================================
+    // Tensor Creation Tests
+    // ========================================================================
+
     #[test]
-    fn test_tensor_factory_methods() {
-        // Test tensor creation
+    fn test_tensor_new() {
         let t = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]);
         assert_eq!(t.data.len(), 4);
         assert_eq!(t.shape, vec![2, 2]);
+    }
 
-        // Create zeros
-        let t = Tensor::zeros(vec![2, 2]);
-        assert_eq!(t.data, vec![0.0, 0.0, 0.0, 0.0]);
-        assert_eq!(t.shape, vec![2, 2]);
+    #[test]
+    fn test_tensor_zeros() {
+        let zeros = Tensor::zeros(vec![2, 2]);
+        assert_eq!(zeros.data, vec![0.0, 0.0, 0.0, 0.0]);
+    }
 
-        // Create ones
-        let t = Tensor::ones(vec![2, 2]);
-        assert_eq!(t.data, vec![1.0, 1.0, 1.0, 1.0]);
-        assert_eq!(t.shape, vec![2, 2]);
+    #[test]
+    fn test_tensor_ones() {
+        let ones = Tensor::ones(vec![2, 2]);
+        assert_eq!(ones.data, vec![1.0, 1.0, 1.0, 1.0]);
+    }
 
-        // Create random
-        let t = Tensor::randn(vec![2, 2]);
-        assert_eq!(t.data.len(), 4);
-        assert_eq!(t.shape, vec![2, 2]);
-        assert!(t.data.iter().all(|&x| x >= -1.0 && x <= 1.0));
+    #[test]
+    fn test_tensor_randn() {
+        let rand = Tensor::randn(vec![2, 2]);
+        assert_eq!(rand.data.len(), 4);
+        assert!(rand.data.iter().all(|&x| x >= -1.0 && x <= 1.0));
     }
 
     #[test]
@@ -758,556 +896,399 @@ mod tests {
         let _t = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], vec![3, 2]);
     }
 
+    // ========================================================================
+    // Basic Autograd Tests
+    // ========================================================================
+
     #[test]
-    fn test_backward_simple_add() {
-        // Test: z = x + y, all scalars
-        // dz/dx = 1, dz/dy = 1
+    fn test_simple_backward() {
         let x = Tensor::new(vec![2.0], vec![1]).requires_grad(true);
         let y = Tensor::new(vec![3.0], vec![1]).requires_grad(true);
-        let z = x.add(&y);
-
-        // Before backward, gradients should be zero
+        let z = (&x).add(&y);
         assert_eq!(*x.grad.borrow(), vec![0.0]);
-        assert_eq!(*y.grad.borrow(), vec![0.0]);
-
-        // Call backward
         z.backward();
-
-        // After backward, gradients should be 1.0 (gradient flows equally)
         assert_eq!(*x.grad.borrow(), vec![1.0]);
         assert_eq!(*y.grad.borrow(), vec![1.0]);
     }
 
     #[test]
-    fn test_backward_chain() {
-        // Test: z = (x + y) + x
-        // This tests that gradients accumulate properly
-        // dz/dx = 2 (appears twice in computation)
-        // dz/dy = 1
+    fn test_gradient_accumulation() {
         let x = Tensor::new(vec![2.0], vec![1]).requires_grad(true);
         let y = Tensor::new(vec![3.0], vec![1]).requires_grad(true);
-
-        let temp = x.add(&y); // temp = x + y
-        let z = temp.add(&x); // z = temp + x = (x + y) + x
-
+        let temp = (&x).add(&y);
+        let z = (&temp).add(&x);
         z.backward();
-
-        // x appears twice, so gradient should be 2.0
-        assert_eq!(*x.grad.borrow(), vec![2.0]);
-        // y appears once, so gradient should be 1.0
+        assert_eq!(*x.grad.borrow(), vec![2.0]); // x appears twice
         assert_eq!(*y.grad.borrow(), vec![1.0]);
     }
 
     #[test]
-    fn test_backward_relu() {
-        // Test: z = relu(x)
-        // relu gradient: 1 where x > 0, else 0
-        let x = Tensor::new(vec![-1.0, 0.0, 1.0, 2.0], vec![4]).requires_grad(true);
-        let z = x.relu();
-
-        z.backward();
-
-        // Gradient should be 0 for x <= 0, and 1 for x > 0
-        let x_grad = x.grad.borrow();
-        assert_eq!(x_grad[0], 0.0); // x = -1.0, gradient = 0
-        assert_eq!(x_grad[1], 0.0); // x = 0.0, gradient = 0
-        assert_eq!(x_grad[2], 1.0); // x = 1.0, gradient = 1
-        assert_eq!(x_grad[3], 1.0); // x = 2.0, gradient = 1
-    }
-
-    #[test]
-    fn test_backward_multiple_operations() {
-        // Test: z = relu(x + y)
-        // Tests composition of operations
-        let x = Tensor::new(vec![-1.0, 2.0], vec![2]).requires_grad(true);
-        let y = Tensor::new(vec![0.5, -1.0], vec![2]).requires_grad(true);
-
-        let sum = x.add(&y); // [-0.5, 1.0]
-        let z = sum.relu(); // [0.0, 1.0]
-
-        z.backward();
-
-        let x_grad = x.grad.borrow();
-        let y_grad = y.grad.borrow();
-
-        // First element: -1.0 + 0.5 = -0.5, relu -> 0, so gradient = 0
-        assert_eq!(x_grad[0], 0.0);
-        assert_eq!(y_grad[0], 0.0);
-
-        // Second element: 2.0 + (-1.0) = 1.0, relu -> 1.0, so gradient = 1
-        assert_eq!(x_grad[1], 1.0);
-        assert_eq!(y_grad[1], 1.0);
-    }
-
-    #[test]
-    fn test_gradient_accumulation() {
-        // Test that gradients accumulate correctly across multiple backward passes
+    fn test_zero_grad() {
         let mut x = Tensor::new(vec![1.0], vec![1]).requires_grad(true);
-
-        // First operation
-        let y1 = x.add(&x); // y1 = 2x
-        y1.backward();
-
-        // Check gradient after first backward
-        let grad_after_first = x.grad.borrow().clone();
-        assert_eq!(grad_after_first, vec![2.0]);
-
-        // Zero out gradients
+        let y = (&x).add(&x);
+        y.backward();
+        assert_eq!(*x.grad.borrow(), vec![2.0]);
         x.zero_grad();
         assert_eq!(*x.grad.borrow(), vec![0.0]);
-
-        // Second operation
-        let y2 = x.add(&x);
-        y2.backward();
-
-        // Should be same as before (gradients were zeroed)
-        assert_eq!(*x.grad.borrow(), vec![2.0]);
     }
 
     #[test]
-    fn test_binary_ops_forward_and_gradients() {
-        // Test all binary operations: add, sub, mul with forward and backward passes
-        let mut x = Tensor::new(vec![2.0, 3.0, 4.0], vec![3]).requires_grad(true);
-        let mut y = Tensor::new(vec![1.0, 2.0, 3.0], vec![3]).requires_grad(true);
-
-        // Test addition: z = x + y
-        let z_add = x.add(&y);
-        assert_eq!(z_add.data, vec![3.0, 5.0, 7.0]);
-        z_add.backward();
-        assert_eq!(*x.grad.borrow(), vec![1.0, 1.0, 1.0]); // dz/dx = 1
-        assert_eq!(*y.grad.borrow(), vec![1.0, 1.0, 1.0]); // dz/dy = 1
-
-        // Reset gradients
-        x.zero_grad();
-        y.zero_grad();
-
-        // Test subtraction: z = x - y
-        let z_sub = x.sub(&y);
-        assert_eq!(z_sub.data, vec![1.0, 1.0, 1.0]);
-        z_sub.backward();
-        assert_eq!(*x.grad.borrow(), vec![1.0, 1.0, 1.0]); // dz/dx = 1
-        assert_eq!(*y.grad.borrow(), vec![-1.0, -1.0, -1.0]); // dz/dy = -1
-
-        // Reset gradients
-        x.zero_grad();
-        y.zero_grad();
-
-        // Test multiplication: z = x * y
-        // z = [2*1, 3*2, 4*3] = [2, 6, 12]
-        let z_mul = x.mul(&y);
-        assert_eq!(z_mul.data, vec![2.0, 6.0, 12.0]);
-        z_mul.backward();
-        // dz/dx = y = [1, 2, 3]
-        assert_eq!(*x.grad.borrow(), vec![1.0, 2.0, 3.0]);
-        // dz/dy = x = [2, 3, 4]
-        assert_eq!(*y.grad.borrow(), vec![2.0, 3.0, 4.0]);
-    }
-
-    #[test]
-    fn test_mul_scalar() {
-        // Test scalar multiplication: z = x * c
-        let x = Tensor::new(vec![2.0, 3.0, 4.0], vec![3]).requires_grad(true);
-        let scalar = 2.5;
-
-        let z = x.mul_scalar(scalar);
-        assert_eq!(z.data, vec![5.0, 7.5, 10.0]);
-
+    fn test_composed_operations() {
+        let x = Tensor::new(vec![-1.0, 2.0], vec![2]).requires_grad(true);
+        let y = Tensor::new(vec![0.5, -1.0], vec![2]).requires_grad(true);
+        let sum = (&x).add(&y);
+        let z = sum.relu();
         z.backward();
-        // dz/dx = scalar = 2.5 for all elements
-        assert_eq!(*x.grad.borrow(), vec![2.5, 2.5, 2.5]);
-    }
-
-    #[test]
-    fn test_self_binary_ops() {
-        // Test operations where both operands are the same tensor
-        let mut x = Tensor::new(vec![2.0, 3.0], vec![2]).requires_grad(true);
-
-        // z = x + x = 2x
-        let z = x.add(&x);
-        assert_eq!(z.data, vec![4.0, 6.0]);
-        z.backward();
-        // dz/dx = 2 (since x appears twice)
-        assert_eq!(*x.grad.borrow(), vec![2.0, 2.0]);
-
-        x.zero_grad();
-
-        // z = x * x = x^2
-        let z_sq = x.mul(&x);
-        assert_eq!(z_sq.data, vec![4.0, 9.0]);
-        z_sq.backward();
-        // dz/dx = 2x = [4, 6]
-        assert_eq!(*x.grad.borrow(), vec![4.0, 6.0]);
+        assert_eq!(*x.grad.borrow(), vec![0.0, 1.0]);
+        assert_eq!(*y.grad.borrow(), vec![0.0, 1.0]);
     }
 
     #[test]
     fn test_complex_expression() {
-        // Test a more complex expression: z = (x + y) * (x - y)
-        // This is equivalent to: z = x^2 - y^2
+        // (x + y) * (x - y) = x^2 - y^2
         let x = Tensor::new(vec![3.0], vec![1]).requires_grad(true);
         let y = Tensor::new(vec![2.0], vec![1]).requires_grad(true);
-
-        let sum = x.add(&y); // sum = 5
-        let diff = x.sub(&y); // diff = 1
-        let z = sum.mul(&diff); // z = 5 * 1 = 5
-
-        assert_eq!(z.data, vec![5.0]);
-
+        let sum = (&x).add(&y);
+        let diff = (&x).sub(&y);
+        let z = (&sum).mul(&diff);
         z.backward();
+        assert_eq!(*x.grad.borrow(), vec![6.0]); // 2x
+        assert_eq!(*y.grad.borrow(), vec![-4.0]); // -2y
+    }
 
-        // dz/dx = d/dx(x^2 - y^2) = 2x = 6
-        // Manual computation:
-        // z = (x+y)(x-y) = x^2 - y^2
-        // dz/dx = 2x
-        assert_eq!(*x.grad.borrow(), vec![6.0]);
+    // ========================================================================
+    // Element-wise Operation Tests
+    // ========================================================================
 
-        // dz/dy = d/dy(x^2 - y^2) = -2y = -4
-        assert_eq!(*y.grad.borrow(), vec![-4.0]);
+    #[test]
+    fn test_add_forward() {
+        let x = Tensor::new(vec![2.0, 3.0, 4.0], vec![3]);
+        let y = Tensor::new(vec![1.0, 2.0, 3.0], vec![3]);
+        let z = (&x).add(&y);
+        assert_eq!(z.data, vec![3.0, 5.0, 7.0]);
     }
 
     #[test]
-    fn test_matmul_forward_and_gradients() {
-        // Test matrix multiplication: C = A @ B
-        // A: [2x3], B: [3x2] -> C: [2x2]
-        let a = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]).requires_grad(true);
-
-        let b = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![3, 2]).requires_grad(true);
-
-        let c = a.matmul(&b);
-
-        // Forward pass verification
-        // C[0,0] = 1*1 + 2*3 + 3*5 = 1 + 6 + 15 = 22
-        // C[0,1] = 1*2 + 2*4 + 3*6 = 2 + 8 + 18 = 28
-        // C[1,0] = 4*1 + 5*3 + 6*5 = 4 + 15 + 30 = 49
-        // C[1,1] = 4*2 + 5*4 + 6*6 = 8 + 20 + 36 = 64
-        assert_eq!(c.data, vec![22.0, 28.0, 49.0, 64.0]);
-        assert_eq!(c.shape, vec![2, 2]);
-
-        // Backward pass
-        c.backward();
-
-        // dL/dA = grad_output @ B^T
-        // grad_output = [[1, 1], [1, 1]]
-        // B^T = [[1, 3, 5], [2, 4, 6]]
-        // dL/dA = [[1*1 + 1*2, 1*3 + 1*4, 1*5 + 1*6],
-        //          [1*1 + 1*2, 1*3 + 1*4, 1*5 + 1*6]]
-        //       = [[3, 7, 11], [3, 7, 11]]
-        let a_grad = a.grad.borrow();
-        assert_eq!(*a_grad, vec![3.0, 7.0, 11.0, 3.0, 7.0, 11.0]);
-
-        // dL/dB = A^T @ grad_output
-        // A^T = [[1, 4], [2, 5], [3, 6]]
-        // grad_output = [[1, 1], [1, 1]]
-        // dL/dB = [[1*1 + 4*1, 1*1 + 4*1],
-        //          [2*1 + 5*1, 2*1 + 5*1],
-        //          [3*1 + 6*1, 3*1 + 6*1]]
-        //       = [[5, 5], [7, 7], [9, 9]]
-        let b_grad = b.grad.borrow();
-        assert_eq!(*b_grad, vec![5.0, 5.0, 7.0, 7.0, 9.0, 9.0]);
+    fn test_add_backward() {
+        let x = Tensor::new(vec![2.0, 3.0, 4.0], vec![3]).requires_grad(true);
+        let y = Tensor::new(vec![1.0, 2.0, 3.0], vec![3]).requires_grad(true);
+        let z = (&x).add(&y);
+        z.backward();
+        assert_eq!(*x.grad.borrow(), vec![1.0, 1.0, 1.0]);
+        assert_eq!(*y.grad.borrow(), vec![1.0, 1.0, 1.0]);
     }
 
     #[test]
-    fn test_matmul_chain() {
-        // Test chained matrix multiplication: D = (A @ B) @ C
-        let a = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]).requires_grad(true);
-        let b = Tensor::new(vec![2.0, 0.0, 0.0, 2.0], vec![2, 2]).requires_grad(true);
-        let c = Tensor::new(vec![1.0, 1.0, 1.0, 1.0], vec![2, 2]).requires_grad(true);
-
-        // First matmul: temp = A @ B
-        // [[1, 2], [3, 4]] @ [[2, 0], [0, 2]] = [[2, 4], [6, 8]]
-        let temp = a.matmul(&b);
-        assert_eq!(temp.data, vec![2.0, 4.0, 6.0, 8.0]);
-
-        // Second matmul: d = temp @ C
-        // [[2, 4], [6, 8]] @ [[1, 1], [1, 1]] = [[6, 6], [14, 14]]
-        let d = temp.matmul(&c);
-        assert_eq!(d.data, vec![6.0, 6.0, 14.0, 14.0]);
-
-        d.backward();
-
-        // Verify gradients exist (exact values would require detailed calculation)
-        let a_grad = a.grad.borrow();
-        let b_grad = b.grad.borrow();
-        let c_grad = c.grad.borrow();
-
-        // All gradients should be non-zero
-        assert!(a_grad.iter().all(|&g| g != 0.0));
-        assert!(b_grad.iter().all(|&g| g != 0.0));
-        assert!(c_grad.iter().all(|&g| g != 0.0));
+    fn test_sub_forward() {
+        let x = Tensor::new(vec![2.0, 3.0, 4.0], vec![3]);
+        let y = Tensor::new(vec![1.0, 2.0, 3.0], vec![3]);
+        let z = (&x).sub(&y);
+        assert_eq!(z.data, vec![1.0, 1.0, 1.0]);
     }
 
     #[test]
-    #[should_panic(expected = "Self-matmul (x.matmul(&x)) is not yet supported")]
-    fn test_matmul_self_panic() {
-        // Test that self-matmul panics with appropriate message
-        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]).requires_grad(true);
-        let _result = x.matmul(&x);
+    fn test_sub_backward() {
+        let x = Tensor::new(vec![2.0, 3.0, 4.0], vec![3]).requires_grad(true);
+        let y = Tensor::new(vec![1.0, 2.0, 3.0], vec![3]).requires_grad(true);
+        let z = (&x).sub(&y);
+        z.backward();
+        assert_eq!(*x.grad.borrow(), vec![1.0, 1.0, 1.0]);
+        assert_eq!(*y.grad.borrow(), vec![-1.0, -1.0, -1.0]);
     }
 
     #[test]
-    fn test_sigmoid_forward_and_backward() {
-        // Test sigmoid: σ(x) = 1 / (1 + e^-x)
-        // Gradient: dσ/dx = σ(x) * (1 - σ(x))
+    fn test_mul_forward() {
+        let x = Tensor::new(vec![2.0, 3.0, 4.0], vec![3]);
+        let y = Tensor::new(vec![1.0, 2.0, 3.0], vec![3]);
+        let z = (&x).mul(&y);
+        assert_eq!(z.data, vec![2.0, 6.0, 12.0]);
+    }
+
+    #[test]
+    fn test_mul_backward() {
+        let x = Tensor::new(vec![2.0, 3.0, 4.0], vec![3]).requires_grad(true);
+        let y = Tensor::new(vec![1.0, 2.0, 3.0], vec![3]).requires_grad(true);
+        let z = (&x).mul(&y);
+        z.backward();
+        assert_eq!(*x.grad.borrow(), vec![1.0, 2.0, 3.0]); // y
+        assert_eq!(*y.grad.borrow(), vec![2.0, 3.0, 4.0]); // x
+    }
+
+    #[test]
+    fn test_self_add() {
+        let mut x = Tensor::new(vec![2.0, 3.0], vec![2]).requires_grad(true);
+        let z = (&x).add(&x);
+        assert_eq!(z.data, vec![4.0, 6.0]);
+        z.backward();
+        assert_eq!(*x.grad.borrow(), vec![2.0, 2.0]);
+    }
+
+    #[test]
+    fn test_self_mul() {
+        let x = Tensor::new(vec![2.0, 3.0], vec![2]).requires_grad(true);
+        let z = (&x).mul(&x);
+        assert_eq!(z.data, vec![4.0, 9.0]);
+        z.backward();
+        assert_eq!(*x.grad.borrow(), vec![4.0, 6.0]); // 2x
+    }
+
+    // ========================================================================
+    // Scalar Operation Tests
+    // ========================================================================
+
+    #[test]
+    fn test_mul_scalar_forward() {
+        let x = Tensor::new(vec![2.0, 3.0, 4.0], vec![3]);
+        let z = x.mul_scalar(2.5);
+        assert_eq!(z.data, vec![5.0, 7.5, 10.0]);
+    }
+
+    #[test]
+    fn test_mul_scalar_backward() {
+        let x = Tensor::new(vec![2.0, 3.0, 4.0], vec![3]).requires_grad(true);
+        let z = x.mul_scalar(2.5);
+        z.backward();
+        assert_eq!(*x.grad.borrow(), vec![2.5, 2.5, 2.5]);
+    }
+
+    // ========================================================================
+    // Power Operation Tests
+    // ========================================================================
+
+    #[test]
+    fn test_pow_square() {
+        let x = Tensor::new(vec![1.0, 2.0, 3.0], vec![3]).requires_grad(true);
+        let z = x.pow(2.0);
+        assert_eq!(z.data, vec![1.0, 4.0, 9.0]);
+        z.backward();
+        assert_eq!(*x.grad.borrow(), vec![2.0, 4.0, 6.0]); // 2x
+    }
+
+    #[test]
+    fn test_pow_sqrt() {
+        let x = Tensor::new(vec![1.0, 4.0, 9.0], vec![3]).requires_grad(true);
+        let z = x.pow(0.5);
+        assert_eq!(z.data, vec![1.0, 2.0, 3.0]);
+        z.backward();
+        assert!((x.grad.borrow()[0] - 0.5).abs() < 1e-6);
+        assert!((x.grad.borrow()[1] - 0.25).abs() < 1e-6);
+        assert!((x.grad.borrow()[2] - 0.166666667).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_pow_mse_loss() {
+        let pred = Tensor::new(vec![1.0, 2.0, 3.0], vec![3]).requires_grad(true);
+        let target = Tensor::new(vec![1.5, 1.5, 2.5], vec![3]);
+        let diff = (&pred).sub(&target);
+        let squared = diff.pow(2.0);
+        assert_eq!(squared.data, vec![0.25, 0.25, 0.25]);
+        let loss = squared.mean();
+        loss.backward();
+        assert!(pred.grad.borrow().iter().all(|&g| !g.is_nan()));
+    }
+
+    // ========================================================================
+    // Activation Function Tests
+    // ========================================================================
+
+    #[test]
+    fn test_relu_forward() {
+        let x = Tensor::new(vec![-1.0, 0.0, 1.0, 2.0], vec![4]);
+        let z = x.relu();
+        assert_eq!(z.data, vec![0.0, 0.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn test_relu_backward() {
+        let x = Tensor::new(vec![-1.0, 0.0, 1.0, 2.0], vec![4]).requires_grad(true);
+        let z = x.relu();
+        z.backward();
+        assert_eq!(*x.grad.borrow(), vec![0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn test_sigmoid_forward() {
+        let x = Tensor::new(vec![0.0, 1.0, -1.0], vec![3]);
+        let z = x.sigmoid();
+        assert!((z.data[0] - 0.5).abs() < 1e-6);
+        assert!((z.data[1] - 0.7310586).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_sigmoid_backward() {
         let x = Tensor::new(vec![0.0, 1.0, -1.0, 2.0], vec![4]).requires_grad(true);
         let y = x.sigmoid();
-
-        // Forward pass verification
-        // σ(0) = 1/(1 + 1) = 0.5
-        // σ(1) = 1/(1 + e^-1) ≈ 0.7311
-        // σ(-1) = 1/(1 + e^1) ≈ 0.2689
-        // σ(2) = 1/(1 + e^-2) ≈ 0.8808
-        assert!((y.data[0] - 0.5).abs() < 1e-4);
-        assert!((y.data[1] - 0.7311).abs() < 1e-4);
-        assert!((y.data[2] - 0.2689).abs() < 1e-4);
-        assert!((y.data[3] - 0.8808).abs() < 1e-4);
-
-        // Backward pass
         y.backward();
-
         let x_grad = x.grad.borrow();
-        // Gradient: σ(x) * (1 - σ(x))
-        // At x=0: 0.5 * 0.5 = 0.25
-        // At x=1: 0.7311 * 0.2689 ≈ 0.1966
-        // At x=-1: 0.2689 * 0.7311 ≈ 0.1966
-        // At x=2: 0.8808 * 0.1192 ≈ 0.1050
         assert!((x_grad[0] - 0.25).abs() < 1e-4);
         assert!((x_grad[1] - 0.1966).abs() < 1e-3);
         assert!((x_grad[2] - 0.1966).abs() < 1e-3);
         assert!((x_grad[3] - 0.1050).abs() < 1e-3);
     }
 
+    // ========================================================================
+    // Matrix Multiplication Tests
+    // ========================================================================
+
     #[test]
-    fn test_reshape_forward_and_backward() {
-        // Test reshape: no computation, just view change
-        // Gradient should flow through unchanged
-        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]).requires_grad(true);
-
-        // Reshape from [2, 3] to [3, 2]
-        let y = x.reshape(vec![3, 2]);
-        assert_eq!(y.shape, vec![3, 2]);
-        assert_eq!(y.data, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]); // Same data
-
-        // Chain with another operation to make gradient non-uniform
-        let z = y.mul_scalar(2.0); // z = 2y
-
-        z.backward();
-
-        // Gradient through reshape and mul_scalar: dz/dx = 2.0 for all elements
-        let x_grad = x.grad.borrow();
-        assert_eq!(*x_grad, vec![2.0, 2.0, 2.0, 2.0, 2.0, 2.0]);
+    fn test_matmul_forward() {
+        let a = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]);
+        let b = Tensor::new(vec![5.0, 6.0, 7.0, 8.0], vec![2, 2]);
+        let c = a.matmul(&b);
+        assert_eq!(c.data, vec![19.0, 22.0, 43.0, 50.0]);
     }
 
     #[test]
-    fn test_transpose_forward_and_backward() {
-        // Test transpose: swap dimensions
-        // Gradient should be transposed back
-        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]).requires_grad(true);
+    fn test_matmul_backward() {
+        let a = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]).requires_grad(true);
+        let b = Tensor::new(vec![5.0, 6.0, 7.0, 8.0], vec![2, 2]).requires_grad(true);
+        let c = a.matmul(&b);
+        c.backward();
+        assert_eq!(*a.grad.borrow(), vec![11.0, 15.0, 11.0, 15.0]);
+        assert_eq!(*b.grad.borrow(), vec![4.0, 4.0, 6.0, 6.0]);
+    }
 
-        // Transpose from [2, 3] to [3, 2]
-        // Original:  [[1, 2, 3],
-        //             [4, 5, 6]]
-        // Transposed: [[1, 4],
-        //              [2, 5],
-        //              [3, 6]]
+    #[test]
+    fn test_matmul_rectangular() {
+        let a = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]).requires_grad(true);
+        let b = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![3, 2]).requires_grad(true);
+        let c = a.matmul(&b);
+        assert_eq!(c.data, vec![22.0, 28.0, 49.0, 64.0]);
+        assert_eq!(c.shape, vec![2, 2]);
+        c.backward();
+        let a_grad = a.grad.borrow();
+        let b_grad = b.grad.borrow();
+        assert_eq!(*a_grad, vec![3.0, 7.0, 11.0, 3.0, 7.0, 11.0]);
+        assert_eq!(*b_grad, vec![5.0, 5.0, 7.0, 7.0, 9.0, 9.0]);
+    }
+
+    #[test]
+    fn test_matmul_chain() {
+        let a = Tensor::new(vec![1.0, 2.0], vec![1, 2]).requires_grad(true);
+        let b = Tensor::new(vec![3.0, 4.0, 5.0, 6.0], vec![2, 2]).requires_grad(true);
+        let c = Tensor::new(vec![7.0, 8.0], vec![2, 1]).requires_grad(true);
+        let ab = a.matmul(&b);
+        let result = ab.matmul(&c);
+        assert_eq!(result.shape, vec![1, 1]);
+        result.backward();
+        assert!(a.grad.borrow().iter().all(|&g| !g.is_nan()));
+        assert!(b.grad.borrow().iter().all(|&g| !g.is_nan()));
+        assert!(c.grad.borrow().iter().all(|&g| !g.is_nan()));
+    }
+
+    #[test]
+    #[should_panic(expected = "Self-matmul (x.matmul(&x)) is not yet supported")]
+    fn test_matmul_self_panic() {
+        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]).requires_grad(true);
+        let _result = x.matmul(&x);
+    }
+
+    // ========================================================================
+    // Shape Manipulation Tests
+    // ========================================================================
+
+    #[test]
+    fn test_reshape_forward() {
+        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]);
+        let y = x.reshape(vec![3, 2]);
+        assert_eq!(y.shape, vec![3, 2]);
+        assert_eq!(y.data, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn test_reshape_backward() {
+        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]).requires_grad(true);
+        let y = x.reshape(vec![3, 2]);
+        let z = y.mul_scalar(2.0);
+        z.backward();
+        assert_eq!(*x.grad.borrow(), vec![2.0, 2.0, 2.0, 2.0, 2.0, 2.0]);
+    }
+
+    #[test]
+    fn test_reshape_with_operations() {
+        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], vec![4]).requires_grad(true);
+        let y = Tensor::new(vec![2.0, 3.0, 4.0, 5.0], vec![4]).requires_grad(true);
+        let x_reshaped = x.reshape(vec![2, 2]);
+        let y_reshaped = y.reshape(vec![2, 2]);
+        let z = (&x_reshaped).add(&y_reshaped);
+        assert_eq!(z.data, vec![3.0, 5.0, 7.0, 9.0]);
+        z.backward();
+        assert_eq!(*x.grad.borrow(), vec![1.0, 1.0, 1.0, 1.0]);
+        assert_eq!(*y.grad.borrow(), vec![1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn test_transpose_forward() {
+        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]);
         let y = x.transpose();
         assert_eq!(y.shape, vec![3, 2]);
         assert_eq!(y.data, vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
-
-        y.backward();
-
-        // Gradient of transpose is transpose, so all gradients should be 1.0
-        let x_grad = x.grad.borrow();
-        assert_eq!(*x_grad, vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
     }
 
     #[test]
-    fn test_transpose_chain() {
-        // Test transpose in a chain: z = (x^T)^T should equal x
+    fn test_transpose_backward() {
+        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]).requires_grad(true);
+        let y = x.transpose();
+        y.backward();
+        assert_eq!(*x.grad.borrow(), vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn test_transpose_double() {
         let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]).requires_grad(true);
-
-        let y = x.transpose(); // [2, 2] -> [2, 2]
-        let z = y.transpose(); // [2, 2] -> [2, 2]
-
-        // Double transpose should give back original
+        let y = x.transpose();
+        let z = y.transpose();
         assert_eq!(z.data, x.data);
         assert_eq!(z.shape, x.shape);
-
         z.backward();
-
-        // Gradient should flow through both transposes
-        let x_grad = x.grad.borrow();
-        assert_eq!(*x_grad, vec![1.0, 1.0, 1.0, 1.0]);
+        assert_eq!(*x.grad.borrow(), vec![1.0, 1.0, 1.0, 1.0]);
     }
 
+    // ========================================================================
+    // Reduction Operation Tests
+    // ========================================================================
+
     #[test]
-    fn test_reshape_with_computation() {
-        // Test reshape combined with actual computation
+    fn test_sum_all() {
         let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], vec![4]).requires_grad(true);
-        let y = Tensor::new(vec![2.0, 3.0, 4.0, 5.0], vec![4]).requires_grad(true);
-
-        // Reshape and then add
-        let x_reshaped = x.reshape(vec![2, 2]);
-        let y_reshaped = y.reshape(vec![2, 2]);
-        let z = x_reshaped.add(&y_reshaped);
-
-        assert_eq!(z.data, vec![3.0, 5.0, 7.0, 9.0]);
-
-        z.backward();
-
-        // Gradients should be all 1s (from add)
-        let x_grad = x.grad.borrow();
-        let y_grad = y.grad.borrow();
-        assert_eq!(*x_grad, vec![1.0, 1.0, 1.0, 1.0]);
-        assert_eq!(*y_grad, vec![1.0, 1.0, 1.0, 1.0]);
+        let s = x.sum();
+        assert_eq!(s.data, vec![10.0]);
+        s.backward();
+        assert_eq!(*x.grad.borrow(), vec![1.0, 1.0, 1.0, 1.0]);
     }
 
     #[test]
-    fn test_sum_axis() {
-        // Test sum along axis 0 (rows)
-        // [[1, 2, 3],
-        //  [4, 5, 6]]
+    fn test_sum_axis_0() {
         let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]).requires_grad(true);
-
-        // Sum along axis 0: [5, 7, 9]
         let y = x.sum_axis(Some(0), false);
         assert_eq!(y.shape, vec![3]);
         assert_eq!(y.data, vec![5.0, 7.0, 9.0]);
-
         y.backward();
-
-        // Gradient should be all 1s (each element contributes to one output)
-        let x_grad = x.grad.borrow();
-        assert_eq!(*x_grad, vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
-    }
-
-    #[test]
-    fn test_sum_axis_keepdims() {
-        // Test sum along axis with keepdims
-        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]).requires_grad(true);
-
-        // Sum along axis 0 with keepdims: [[5, 7, 9]]
-        let y = x.sum_axis(Some(0), true);
-        assert_eq!(y.shape, vec![1, 3]);
-        assert_eq!(y.data, vec![5.0, 7.0, 9.0]);
-
-        y.backward();
-
-        let x_grad = x.grad.borrow();
-        assert_eq!(*x_grad, vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
+        assert_eq!(*x.grad.borrow(), vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
     }
 
     #[test]
     fn test_sum_axis_1() {
-        // Test sum along axis 1 (columns)
         let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]).requires_grad(true);
-
-        // Sum along axis 1: [6, 15]
         let y = x.sum_axis(Some(1), false);
         assert_eq!(y.shape, vec![2]);
         assert_eq!(y.data, vec![6.0, 15.0]);
-
         y.backward();
-
-        // Gradient should be all 1s
-        let x_grad = x.grad.borrow();
-        assert_eq!(*x_grad, vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
-        drop(x_grad);
+        assert_eq!(*x.grad.borrow(), vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
     }
 
     #[test]
-    fn test_sum_axis_1_keepdims() {
-        // Test sum along axis 1 with keepdims
+    fn test_sum_axis_keepdims() {
         let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]).requires_grad(true);
-
-        // With keepdims
-        let y = x.sum_axis(Some(1), true);
-        assert_eq!(y.shape, vec![2, 1]);
-        assert_eq!(y.data, vec![6.0, 15.0]);
-
-        y.backward();
-
-        let x_grad = x.grad.borrow();
-        assert_eq!(*x_grad, vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
-    }
-
-    #[test]
-    fn test_mean_axis() {
-        // Test mean along axis 0
-        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]).requires_grad(true);
-
-        // Mean along axis 0: [2.5, 3.5, 4.5]
-        let y = x.mean_axis(Some(0), false);
-        assert_eq!(y.shape, vec![3]);
-        assert_eq!(y.data, vec![2.5, 3.5, 4.5]);
-
-        y.backward();
-
-        // Gradient should be 0.5 for each element (1 / axis_size)
-        let x_grad = x.grad.borrow();
-        assert_eq!(*x_grad, vec![0.5, 0.5, 0.5, 0.5, 0.5, 0.5]);
-    }
-
-    #[test]
-    fn test_mean_axis_keepdims() {
-        // Test mean along axis with keepdims
-        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]).requires_grad(true);
-
-        // Mean along axis 0 with keepdims: [[2.5, 3.5, 4.5]]
-        let y = x.mean_axis(Some(0), true);
+        let y = x.sum_axis(Some(0), true);
         assert_eq!(y.shape, vec![1, 3]);
-        assert_eq!(y.data, vec![2.5, 3.5, 4.5]);
-
+        assert_eq!(y.data, vec![5.0, 7.0, 9.0]);
         y.backward();
-
-        let x_grad = x.grad.borrow();
-        assert_eq!(*x_grad, vec![0.5, 0.5, 0.5, 0.5, 0.5, 0.5]);
+        assert_eq!(*x.grad.borrow(), vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
     }
 
     #[test]
-    fn test_mean_axis_1() {
-        // Test mean along axis 1
-        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]).requires_grad(true);
-
-        // Mean along axis 1: [2.0, 5.0]
-        let y = x.mean_axis(Some(1), false);
-        assert_eq!(y.shape, vec![2]);
-        assert_eq!(y.data, vec![2.0, 5.0]);
-
-        y.backward();
-
-        // Gradient should be 1/3 for each element
-        let x_grad = x.grad.borrow();
-        let expected = vec![1.0 / 3.0; 6];
-        for (a, b) in x_grad.iter().zip(expected.iter()) {
-            assert!((a - b).abs() < 1e-6);
-        }
-    }
-
-    #[test]
-    fn test_sum_mean_chain() {
-        // Test chaining sum/mean with other operations
-        // [[1, 2],
-        //  [3, 4]]
-        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]).requires_grad(true);
-
-        // Sum along axis 0: [1+3, 2+4] = [4, 6]
-        let y = x.sum_axis(Some(0), false);
-        assert_eq!(y.data, vec![4.0, 6.0]);
-
-        // Multiply by scalar: [4*2, 6*2] = [8, 12]
-        let z = y.mul_scalar(2.0);
-        assert_eq!(z.data, vec![8.0, 12.0]);
-
-        z.backward();
-
-        // Gradient: 2.0 for all elements (from mul_scalar and sum)
-        let x_grad = x.grad.borrow();
-        assert_eq!(*x_grad, vec![2.0, 2.0, 2.0, 2.0]);
-    }
-
-    #[test]
-    fn test_3d_sum_axis() {
-        // Test sum on 3D tensor
-        // Shape: [2, 2, 3] = 12 elements
+    fn test_sum_3d() {
         let x = Tensor::new(
             vec![
                 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
@@ -1315,29 +1296,269 @@ mod tests {
             vec![2, 2, 3],
         )
         .requires_grad(true);
-
-        // Sum along axis 2 (last axis)
         let y = x.sum_axis(Some(2), false);
         assert_eq!(y.shape, vec![2, 2]);
-        // [1+2+3, 4+5+6, 7+8+9, 10+11+12] = [6, 15, 24, 33]
         assert_eq!(y.data, vec![6.0, 15.0, 24.0, 33.0]);
-
         y.backward();
-
-        // All gradients should be 1.0
-        let x_grad = x.grad.borrow();
-        assert_eq!(*x_grad, vec![1.0; 12]);
+        assert_eq!(*x.grad.borrow(), vec![1.0; 12]);
     }
 
     #[test]
-    fn test_backward_compatibility() {
-        // Ensure old sum() and mean() still work
+    fn test_mean_all() {
         let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], vec![4]).requires_grad(true);
-
-        let s = x.sum();
-        assert_eq!(s.data, vec![10.0]);
-
         let m = x.mean();
         assert_eq!(m.data, vec![2.5]);
+        m.backward();
+        assert_eq!(*x.grad.borrow(), vec![0.25, 0.25, 0.25, 0.25]);
+    }
+
+    #[test]
+    fn test_mean_axis_0() {
+        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]).requires_grad(true);
+        let y = x.mean_axis(Some(0), false);
+        assert_eq!(y.shape, vec![3]);
+        assert_eq!(y.data, vec![2.5, 3.5, 4.5]);
+        y.backward();
+        assert_eq!(*x.grad.borrow(), vec![0.5, 0.5, 0.5, 0.5, 0.5, 0.5]);
+    }
+
+    #[test]
+    fn test_mean_axis_1() {
+        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]).requires_grad(true);
+        let y = x.mean_axis(Some(1), false);
+        assert_eq!(y.shape, vec![2]);
+        assert_eq!(y.data, vec![2.0, 5.0]);
+        y.backward();
+        let expected = vec![1.0 / 3.0; 6];
+        for (a, b) in x.grad.borrow().iter().zip(expected.iter()) {
+            assert!((a - b).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn test_mean_axis_keepdims() {
+        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]).requires_grad(true);
+        let y = x.mean_axis(Some(0), true);
+        assert_eq!(y.shape, vec![1, 3]);
+        assert_eq!(y.data, vec![2.5, 3.5, 4.5]);
+        y.backward();
+        assert_eq!(*x.grad.borrow(), vec![0.5, 0.5, 0.5, 0.5, 0.5, 0.5]);
+    }
+
+    #[test]
+    fn test_sum_mean_chain() {
+        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]).requires_grad(true);
+        let y = x.sum_axis(Some(0), false);
+        let z = y.mul_scalar(2.0);
+        assert_eq!(z.data, vec![8.0, 12.0]);
+        z.backward();
+        assert_eq!(*x.grad.borrow(), vec![2.0, 2.0, 2.0, 2.0]);
+    }
+
+    // ========================================================================
+    // Broadcast Addition Tests
+    // ========================================================================
+
+    #[test]
+    fn test_broadcast_add_same_shape() {
+        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]).requires_grad(true);
+        let y = Tensor::new(vec![5.0, 6.0, 7.0, 8.0], vec![2, 2]).requires_grad(true);
+        let z = x.broadcast_add(&y);
+        assert_eq!(z.data, vec![6.0, 8.0, 10.0, 12.0]);
+        z.backward();
+        assert_eq!(*x.grad.borrow(), vec![1.0, 1.0, 1.0, 1.0]);
+        assert_eq!(*y.grad.borrow(), vec![1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn test_broadcast_add_forward() {
+        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]);
+        let bias = Tensor::new(vec![10.0, 20.0, 30.0], vec![1, 3]);
+        let z = x.broadcast_add(&bias);
+        assert_eq!(z.shape, vec![2, 3]);
+        assert_eq!(z.data, vec![11.0, 22.0, 33.0, 14.0, 25.0, 36.0]);
+    }
+
+    #[test]
+    fn test_broadcast_add_backward() {
+        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]).requires_grad(true);
+        let bias = Tensor::new(vec![10.0, 20.0, 30.0], vec![1, 3]).requires_grad(true);
+        let z = x.broadcast_add(&bias);
+        z.backward();
+        assert_eq!(*x.grad.borrow(), vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
+        assert_eq!(*bias.grad.borrow(), vec![2.0, 2.0, 2.0]); // sum across rows
+    }
+
+    #[test]
+    fn test_broadcast_add_with_matmul() {
+        // y = xW + b (neural network layer)
+        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]).requires_grad(true);
+        let w = Tensor::new(vec![0.5, 1.0, 1.5, 2.0], vec![2, 2]).requires_grad(true);
+        let b = Tensor::new(vec![0.1, 0.2], vec![1, 2]).requires_grad(true);
+        let xw = x.matmul(&w);
+        let z = xw.broadcast_add(&b);
+        z.backward();
+        assert!(x.grad.borrow().iter().all(|&g| !g.is_nan()));
+        assert!(w.grad.borrow().iter().all(|&g| !g.is_nan()));
+        assert_eq!(*b.grad.borrow(), vec![2.0, 2.0]);
+    }
+
+    #[test]
+    fn test_broadcast_add_chain() {
+        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]).requires_grad(true);
+        let b1 = Tensor::new(vec![1.0, 2.0], vec![1, 2]).requires_grad(true);
+        let b2 = Tensor::new(vec![10.0, 20.0], vec![1, 2]).requires_grad(true);
+        let z1 = x.broadcast_add(&b1);
+        let z2 = z1.broadcast_add(&b2);
+        assert_eq!(z2.data, vec![12.0, 24.0, 14.0, 26.0]);
+        z2.backward();
+        assert_eq!(*x.grad.borrow(), vec![1.0, 1.0, 1.0, 1.0]);
+        assert_eq!(*b1.grad.borrow(), vec![2.0, 2.0]);
+        assert_eq!(*b2.grad.borrow(), vec![2.0, 2.0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Self-broadcast_add (x.broadcast_add(&x)) is not supported")]
+    fn test_broadcast_add_self_panic() {
+        let x = Tensor::new(vec![1.0, 2.0], vec![1, 2]).requires_grad(true);
+        let _z = x.broadcast_add(&x);
+    }
+}
+
+// ============================================================================
+// Operator Overloads
+// ============================================================================
+
+use std::ops::{Add, BitXor, Mul, Sub};
+
+/// Implement the + operator for Tensor references
+/// Allows: &tensor1 + &tensor2
+impl Add for &Tensor {
+    type Output = Tensor;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        self.add(rhs)
+    }
+}
+
+/// Implement the - operator for Tensor references
+/// Allows: &tensor1 - &tensor2
+impl Sub for &Tensor {
+    type Output = Tensor;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        self.sub(rhs)
+    }
+}
+
+/// Implement the * operator for Tensor references (element-wise multiplication)
+/// Allows: &tensor1 * &tensor2
+impl Mul for &Tensor {
+    type Output = Tensor;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        self.mul(rhs)
+    }
+}
+
+/// Implement scalar multiplication: Tensor * f32
+/// Allows: &tensor * scalar
+impl Mul<f32> for &Tensor {
+    type Output = Tensor;
+
+    fn mul(self, scalar: f32) -> Self::Output {
+        self.mul_scalar(scalar)
+    }
+}
+
+/// Implement scalar multiplication: f32 * Tensor
+/// Allows: scalar * &tensor
+impl Mul<&Tensor> for f32 {
+    type Output = Tensor;
+
+    fn mul(self, tensor: &Tensor) -> Self::Output {
+        tensor.mul_scalar(self)
+    }
+}
+
+/// Implement the ^ operator for power (Tensor ^ f32)
+/// Allows: &tensor ^ 2.0
+impl BitXor<f32> for &Tensor {
+    type Output = Tensor;
+
+    fn bitxor(self, exponent: f32) -> Self::Output {
+        self.pow(exponent)
+    }
+}
+
+#[cfg(test)]
+mod operator_tests {
+    use super::*;
+
+    #[test]
+    fn test_all_operators() {
+        // Comprehensive test for all tensor operators: +, -, *, scalar *, ^
+
+        // Test basic arithmetic operators
+        let a = Tensor::new(vec![1.0, 2.0, 3.0], vec![3]).requires_grad(true);
+        let b = Tensor::new(vec![4.0, 5.0, 6.0], vec![3]).requires_grad(true);
+
+        // Addition: &a + &b
+        let add_result = &a + &b;
+        assert_eq!(add_result.data, vec![5.0, 7.0, 9.0]);
+
+        // Subtraction: &a - &b
+        let sub_result = &a - &b;
+        assert_eq!(sub_result.data, vec![-3.0, -3.0, -3.0]);
+
+        // Element-wise multiplication: &a * &b
+        let mul_result = &a * &b;
+        assert_eq!(mul_result.data, vec![4.0, 10.0, 18.0]);
+
+        // Scalar multiplication: tensor * scalar and scalar * tensor
+        let scalar_mul1 = &a * 2.0;
+        assert_eq!(scalar_mul1.data, vec![2.0, 4.0, 6.0]);
+        let scalar_mul2 = 3.0 * &a;
+        assert_eq!(scalar_mul2.data, vec![3.0, 6.0, 9.0]);
+
+        // Power operator: &a ^ exponent
+        let pow_result = &a ^ 2.0;
+        assert_eq!(pow_result.data, vec![1.0, 4.0, 9.0]);
+
+        // Test chained operations: (a + b) * c - a
+        let c = Tensor::new(vec![2.0, 3.0, 4.0], vec![3]).requires_grad(true);
+        let sum = &a + &b;
+        let prod = &sum * &c;
+        let chained = &prod - &a;
+        assert_eq!(chained.data, vec![9.0, 19.0, 33.0]); // (1+4)*2-1=9, (2+5)*3-2=19, (3+6)*4-3=33
+
+        // Test gradients with complex expression: y = (2*x + 3)^2
+        let x = Tensor::new(vec![1.0, 2.0], vec![2]).requires_grad(true);
+        let three = Tensor::new(vec![3.0, 3.0], vec![2]);
+        let two_x = 2.0 * &x;
+        let expr = &two_x + &three;
+        let y = &expr ^ 2.0;
+        // y = (2*1+3)^2=25, (2*2+3)^2=49
+        assert_eq!(y.data, vec![25.0, 49.0]);
+
+        y.backward();
+        // dy/dx = 2*(2x+3)*2 = 4*(2x+3) = [4*5, 4*7] = [20, 28]
+        assert_eq!(*x.grad.borrow(), vec![20.0, 28.0]);
+
+        // Test MSE loss pattern: ((pred - target)^2).mean()
+        let pred = Tensor::new(vec![1.0, 2.0, 3.0], vec![3]).requires_grad(true);
+        let target = Tensor::new(vec![1.5, 1.5, 2.5], vec![3]);
+        let diff = &pred - &target;
+        let squared = &diff ^ 2.0;
+        let loss = squared.mean();
+        assert_eq!(loss.data, vec![0.25]);
+
+        loss.backward();
+        let pred_grad = pred.grad.borrow();
+        assert!((pred_grad[0] - (-0.33333334)).abs() < 1e-6);
+        assert!((pred_grad[1] - 0.33333334).abs() < 1e-6);
+        assert!((pred_grad[2] - 0.33333334).abs() < 1e-6);
+
+        println!("✓ All operators test passed!");
     }
 }
