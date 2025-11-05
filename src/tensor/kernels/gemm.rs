@@ -1,6 +1,6 @@
 /// General Matrix Multiply (GEMM) operations
 /// This module contains the core matrix multiplication implementations
-
+/// 
 /// Internal core GEMM operation using explicit strides
 /// Computes: C += alpha * A @ B
 /// 
@@ -16,19 +16,35 @@
 /// * `b_col_stride` - Stride between consecutive cols of B
 /// * `c_data` - Output buffer to accumulate into (shape: [m, n])
 /// * `alpha` - Scaling factor (usually 1.0)
-fn gemm_core(
-    a_data: &[f32],
+struct GemmParams<'a> {
+    a_data: &'a [f32],
     m: usize,
     k: usize,
     a_row_stride: usize,
     a_col_stride: usize,
-    b_data: &[f32],
+    b_data: &'a [f32],
     n: usize,
     b_row_stride: usize,
     b_col_stride: usize,
-    c_data: &mut [f32],
+    c_data: &'a mut [f32],
     alpha: f32,
-) {
+}
+
+fn gemm_core(params: GemmParams) {
+    let GemmParams {
+        a_data,
+        m,
+        k,
+        a_row_stride,
+        a_col_stride,
+        b_data,
+        n,
+        b_row_stride,
+        b_col_stride,
+        c_data,
+        alpha,
+    } = params;
+
     assert_eq!(c_data.len(), m * n, "Output buffer size mismatch");
 
     // Naive triple-loop implementation
@@ -74,16 +90,19 @@ pub fn matmul(a_data: &[f32], a_shape: &[usize], b_data: &[f32], b_shape: &[usiz
     let mut result = vec![0.0; m * n];
 
     // Row-major strides: row_stride = num_cols, col_stride = 1
-    gemm_core(
+    gemm_core(GemmParams {
         a_data,
-        m, k,
-        a_shape[1], 1,  // A row stride, col stride
+        m,
+        k,
+        a_row_stride: a_shape[1],
+        a_col_stride: 1,
         b_data,
         n,
-        b_shape[1], 1,  // B row stride, col stride
-        &mut result,
-        1.0,
-    );
+        b_row_stride: b_shape[1],
+        b_col_stride: 1,
+        c_data: &mut result,
+        alpha: 1.0,
+    });
 
     result
 }
@@ -113,16 +132,19 @@ pub fn matmul_backward_left(
 
     // dL/dA = grad_output @ B^T
     // B^T has strides: row_stride = 1 (column becomes row), col_stride = b_shape[1] (row becomes column)
-    gemm_core(
-        grad_output,
-        m, n,
-        grad_shape[1], 1,  // grad_output: normal row-major strides
+    gemm_core(GemmParams {
+        a_data: grad_output,
+        m,
+        k: n,
+        a_row_stride: grad_shape[1],
+        a_col_stride: 1,
         b_data,
-        k,
-        1, b_shape[1],  // B^T: swapped strides (transpose by swapping strides)
-        a_grad,
-        1.0,
-    );
+        n: k,
+        b_row_stride: 1,
+        b_col_stride: b_shape[1],
+        c_data: a_grad,
+        alpha: 1.0,
+    });
 }
 
 /// Computes gradient with respect to the right matrix (B) in matrix multiplication
@@ -150,16 +172,19 @@ pub fn matmul_backward_right(
 
     // dL/dB = A^T @ grad_output
     // A^T has strides: row_stride = 1 (column becomes row), col_stride = a_shape[1] (row becomes column)
-    gemm_core(
+    gemm_core(GemmParams {
         a_data,
-        k, m,  // A^T dimensions
-        1, a_shape[1],  // A^T: swapped strides (transpose by swapping strides)
-        grad_output,
+        m: k,
+        k: m,
+        a_row_stride: 1,
+        a_col_stride: a_shape[1],
+        b_data: grad_output,
         n,
-        grad_shape[1], 1,  // grad_output: normal row-major strides
-        b_grad,
-        1.0,
-    );
+        b_row_stride: grad_shape[1],
+        b_col_stride: 1,
+        c_data: b_grad,
+        alpha: 1.0,
+    });
 }
 
 #[cfg(test)]

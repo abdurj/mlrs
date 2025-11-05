@@ -1,10 +1,17 @@
 use rust_nn::{Linear, Tensor, SGD};
 
 /// Simple 3-layer neural network for MNIST
+#[allow(dead_code)]
 pub struct SimpleNet {
     fc1: Linear,
     fc2: Linear,
     fc3: Linear,
+}
+
+impl Default for SimpleNet {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SimpleNet {
@@ -18,7 +25,7 @@ impl SimpleNet {
     }
 
     /// Forward pass through the network
-    pub fn forward(&self, x: &Tensor) -> Tensor {
+    pub fn forward(&self, _x: &Tensor) -> Tensor {
         // TODO: Pass through fc1, apply ReLU
         // TODO: Pass through fc2, apply ReLU
         // TODO: Pass through fc3 (no activation on output)
@@ -34,7 +41,8 @@ impl SimpleNet {
 }
 
 /// Generate dummy training data for testing
-fn generate_dummy_data(n_samples: usize) -> (Vec<Tensor>, Vec<usize>) {
+#[allow(dead_code)]
+fn generate_dummy_data(_n_samples: usize) -> (Vec<Tensor>, Vec<usize>) {
     // TODO: Create n_samples random images (784 dimensions each)
     // TODO: Create n_samples random labels (0-9)
     // Hint: Use rand::thread_rng() and gen_range()
@@ -42,12 +50,13 @@ fn generate_dummy_data(n_samples: usize) -> (Vec<Tensor>, Vec<usize>) {
 }
 
 /// Train for one epoch
+#[allow(dead_code)]
 fn train_epoch(
-    model: &mut SimpleNet,
-    optimizer: &SGD,
-    data: &[Tensor],
-    labels: &[usize],
-    batch_size: usize,
+    _model: &mut SimpleNet,
+    _optimizer: &SGD,
+    _data: &[Tensor],
+    _labels: &[usize],
+    _batch_size: usize,
 ) -> f32 {
     // TODO: Iterate through data in batches
     // For each batch:
@@ -76,7 +85,7 @@ fn main() {
 
     // TODO: Training loop
     let epochs = 10;
-    let batch_size = 32;
+    let _batch_size = 32;
 
     println!("\nTraining for {} epochs...\n", epochs);
 

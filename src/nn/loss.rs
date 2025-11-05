@@ -74,13 +74,12 @@ pub fn cross_entropy_loss(logits: &Tensor, targets: &[usize]) -> Tensor {
 
     // Compute loss value using log-sum-exp for numerical stability
     let mut total_loss = 0.0;
-    for i in 0..batch_size {
+    for (i, &target_class) in targets.iter().enumerate().take(batch_size) {
         let offset = i * num_classes;
         let sample_logits = &logits.data[offset..offset + num_classes];
 
         let lse = log_sum_exp(sample_logits);
 
-        let target_class = targets[i];
         total_loss += lse - sample_logits[target_class];
     }
 
@@ -107,12 +106,12 @@ pub fn cross_entropy_loss(logits: &Tensor, targets: &[usize]) -> Tensor {
             let softmax_probs = compute_softmax(&logits_data, batch_size, num_classes);
             
             // Gradient: (softmax - one_hot) / batch_size
-            for i in 0..batch_size {
+            for (i, &target_class) in targets_vec.iter().enumerate().take(batch_size) {
                 let offset = i * num_classes;
                 
                 for j in 0..num_classes {
                     // one_hot is 1.0 at target class, 0.0 elsewhere
-                    let one_hot = if j == targets_vec[i] { 1.0 } else { 0.0 };
+                    let one_hot = if j == target_class { 1.0 } else { 0.0 };
                     
                     // d_logits[i,j] = (softmax[i,j] - one_hot[i,j]) / batch_size
                     grad[offset + j] += (softmax_probs[offset + j] - one_hot) / (batch_size as f32);

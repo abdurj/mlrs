@@ -1,18 +1,15 @@
 //! Additional tensor operations
-//! 
+//!
 //! This module contains higher-level tensor operations like softmax,
 //! layer normalization, and other common neural network operations.
 
 use super::Tensor;
 use std::rc::Rc;
 
-pub mod ops {
-    use super::*;
-
-    /// Softmax activation along the last axis
-/// 
+/// Softmax activation along the last axis
+///
 /// Computes: softmax(x)_i = exp(x_i) / sum(exp(x_j))
-/// 
+///
 /// For numerical stability, we subtract the max value before exponentiating:
 /// softmax(x)_i = exp(x_i - max(x)) / sum(exp(x_j - max(x)))
 pub fn softmax(input: &Tensor) -> Tensor {
@@ -99,9 +96,9 @@ pub fn softmax(input: &Tensor) -> Tensor {
 }
 
 /// Layer normalization
-/// 
+///
 /// Normalizes the input along the last axis to have mean 0 and variance 1.
-/// 
+///
 /// # Arguments
 /// * `input` - The input tensor
 /// * `eps` - Small constant for numerical stability (default: 1e-5)
@@ -199,7 +196,8 @@ pub fn layer_norm(input: &Tensor, eps: f32) -> Tensor {
 
                     for i in 0..axis_size {
                         let idx = base_idx + i;
-                        input_g[idx] += (grad_output[idx] - grad_mean - result_data[idx] * grad_dot_mean) / std;
+                        input_g[idx] +=
+                            (grad_output[idx] - grad_mean - result_data[idx] * grad_dot_mean) / std;
                     }
                 }
             }),
@@ -209,11 +207,9 @@ pub fn layer_norm(input: &Tensor, eps: f32) -> Tensor {
     }
 }
 
-} // end ops module
-
 #[cfg(test)]
 mod tests {
-    use super::ops::*;
+    use super::*;
     use crate::Tensor;
 
     #[test]
@@ -256,10 +252,7 @@ mod tests {
     #[test]
     fn test_softmax_2d() {
         // Test softmax on 2D tensor (batch of vectors)
-        let x = Tensor::new(
-            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
-            vec![2, 3]
-        );
+        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]);
         let y = softmax(&x);
 
         // Check each row sums to 1
@@ -307,10 +300,7 @@ mod tests {
     #[test]
     fn test_layer_norm_2d() {
         // Test layer norm on 2D tensor
-        let x = Tensor::new(
-            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
-            vec![2, 3]
-        );
+        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]);
         let y = layer_norm(&x, 1e-5);
 
         // Check each row has mean ~0 and variance ~1

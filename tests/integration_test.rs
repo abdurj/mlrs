@@ -29,7 +29,7 @@ fn test_tensor_operations_integration() {
 
 #[test]
 fn test_ops_module_integration() {
-    use rust_nn::tensor::ops::ops::softmax;
+    use rust_nn::tensor::ops::softmax;
     
     // Test softmax (from ops.rs) - operates along last axis
     let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]).requires_grad(true);
@@ -47,7 +47,7 @@ fn test_ops_module_integration() {
 
 #[test]
 fn test_layer_norm_integration() {
-    use rust_nn::tensor::ops::ops::layer_norm;
+    use rust_nn::tensor::ops::layer_norm;
     
     // Test layer_norm (from ops.rs) - normalizes along last axis
     let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]).requires_grad(true);
@@ -152,7 +152,7 @@ fn test_reshape_transpose_integration() {
 
 #[test]
 fn test_end_to_end_computation_graph() {
-    use rust_nn::tensor::ops::ops::softmax;
+    use rust_nn::tensor::ops::softmax;
     
     // Complex computation using multiple modules
     let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]).requires_grad(true);
@@ -175,5 +175,5 @@ fn test_end_to_end_computation_graph() {
     assert!((row2_sum - 1.0).abs() < 1e-6);
     
     assert_eq!(y.shape, vec![2, 2]);
-    assert!(y.data.iter().all(|&v| v >= 0.0 && v <= 1.0)); // softmax outputs probabilities
+    assert!(y.data.iter().all(|&v| (0.0..=1.0).contains(&v))); // softmax outputs probabilities
 }

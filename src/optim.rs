@@ -7,14 +7,14 @@ pub struct SGD {
 
 impl SGD {
     /// Create a new SGD optimizer with given learning rate
-    pub fn new(learning_rate: f32) -> Self {
+    pub fn new(_learning_rate: f32) -> Self {
         // TODO: Create and return SGD with learning_rate
         todo!("Implement SGD::new")
     }
 
     /// Update parameters using their gradients
     /// Formula: param = param - learning_rate * grad
-    pub fn step(&self, parameters: &mut [&mut Tensor]) {
+    pub fn step(&self, _parameters: &mut [&mut Tensor]) {
         // TODO: For each parameter:
         //   1. Get its gradient
         //   2. Update: param.data[i] -= learning_rate * grad[i]
@@ -23,7 +23,7 @@ impl SGD {
     }
 
     /// Zero out all gradients
-    pub fn zero_grad(&self, parameters: &mut [&mut Tensor]) {
+    pub fn zero_grad(&self, _parameters: &mut [&mut Tensor]) {
         // TODO: Call zero_grad() on each parameter
         todo!("Implement SGD::zero_grad")
     }
