@@ -1,7 +1,30 @@
 use crate::tensor::Tensor;
+use crate::nn::Loss;
 use std::rc::Rc;
 
 /// Mean Squared Error loss
+pub struct MSELoss;
+
+impl MSELoss {
+    pub fn new() -> Self {
+        MSELoss
+    }
+}
+
+impl Default for MSELoss {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Loss for MSELoss {
+    /// MSE = mean((predictions - targets)^2)
+    fn forward(&self, predictions: &Tensor, targets: &Tensor) -> Tensor {
+        (predictions - targets).pow(2.0).mean()
+    }
+}
+
+/// Mean Squared Error loss function (standalone)
 /// MSE = mean((predictions - targets)^2)
 pub fn mse_loss(predictions: &Tensor, targets: &Tensor) -> Tensor {
     (predictions - targets).pow(2.0).mean()
@@ -57,7 +80,36 @@ fn compute_softmax(logits: &[f32], batch_size: usize, num_classes: usize) -> Vec
     softmax
 }
 
-/// Cross-entropy loss for classification with autograd support
+/// Cross-entropy loss for classification
+pub struct CrossEntropyLoss;
+
+impl CrossEntropyLoss {
+    pub fn new() -> Self {
+        CrossEntropyLoss
+    }
+
+    /// Compute cross-entropy loss
+    /// logits: [batch_size, num_classes] - raw model outputs
+    /// targets: [batch_size] - integer class labels (0 to num_classes-1)
+    pub fn compute(&self, logits: &Tensor, targets: &[usize]) -> Tensor {
+        cross_entropy_loss(logits, targets)
+    }
+}
+
+impl Default for CrossEntropyLoss {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Loss for CrossEntropyLoss {
+    fn forward(&self, logits: &Tensor, targets: &Tensor) -> Tensor {
+        let target_indices: Vec<usize> = targets.data.iter().map(|&x| x as usize).collect();
+        self.compute(logits, &target_indices)
+    }
+}
+
+/// Cross-entropy loss for classification with autograd support (standalone function)
 /// 
 /// logits: [batch_size, num_classes] - raw model outputs
 /// targets: [batch_size] - integer class labels (0 to num_classes-1)
