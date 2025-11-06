@@ -1,4 +1,5 @@
 use crate::tensor::Tensor;
+use tracing::instrument;
 
 /// Stochastic Gradient Descent optimizer
 pub struct SGD {
@@ -13,6 +14,7 @@ impl SGD {
 
     /// Update parameters using their gradients
     /// Formula: param = param - learning_rate * grad
+    #[instrument(skip(self, parameters), fields(num_params = parameters.len(), lr = self.learning_rate))]
     pub fn step(&self, parameters: &mut [&mut Tensor]) {
         parameters.iter_mut().for_each(|param| {
             param
@@ -26,6 +28,7 @@ impl SGD {
     }
 
     /// Zero out all gradients
+    #[instrument(skip(self, parameters), fields(num_params = parameters.len()))]
     pub fn zero_grad(&self, parameters: &mut [&mut Tensor]) {
         parameters.iter_mut().for_each(|param| {
             param.zero_grad();

@@ -2,6 +2,7 @@ use clap::Parser;
 use rand::Rng;
 use rust_nn::optim::SGD;
 use rust_nn::{CrossEntropyLoss, Linear, Loss, Tensor};
+use tracing::{info_span, instrument};
 
 /// Simple neural network training for MNIST-like data
 #[derive(Parser, Debug)]
@@ -52,6 +53,7 @@ impl SimpleNet {
     }
 
     /// Forward pass through the network
+    #[instrument(skip(self, x), fields(in_shape = ?x.shape, out_features = self.fc3.out_features))]
     pub fn forward(&self, x: &Tensor) -> Tensor {
         let out1 = self.fc1.forward(x).relu();
         let out2 = self.fc2.forward(&out1).relu();
@@ -103,17 +105,24 @@ fn train_epoch<L: Loss>(
     labels: &Tensor, // [n_samples, 1] class indices as floats
     batch_size: usize,
 ) -> f32 {
+    let _span = info_span!("train_epoch").entered();
+
     let n_samples = data.shape[0];
     let mut total_loss = 0.0;
     let n_batches = n_samples.div_ceil(batch_size);
 
     for batch_idx in 0..n_batches {
+        let _batch_span = info_span!("batch", batch_idx).entered();
+
         let start = batch_idx * batch_size;
         let end = ((batch_idx + 1) * batch_size).min(n_samples);
         let curr_batch_size = end - start;
 
         // Extract batch data [curr_batch_size, 784]
-        let batch_data: Vec<f32> = data.data[start * 784..end * 784].to_vec();
+        let batch_data: Vec<f32> = {
+            let _span = info_span!("extract_batch_data").entered();
+            data.data[start * 784..end * 784].to_vec()
+        };
         let batch_tensor = Tensor::new(batch_data, vec![curr_batch_size, 784]).requires_grad(true);
 
         // Extract batch labels [curr_batch_size, 1]
@@ -121,20 +130,32 @@ fn train_epoch<L: Loss>(
         let batch_labels = Tensor::new(batch_label_data, vec![curr_batch_size, 1]);
 
         // Zero gradients
-        optimizer.zero_grad(&mut model.parameters());
+        {
+            let _span = info_span!("zero_grad").entered();
+            optimizer.zero_grad(&mut model.parameters());
+        }
 
         // Forward pass: [curr_batch_size, 784] -> [curr_batch_size, 10]
-        let predictions = model.forward(&batch_tensor);
+        let predictions = { model.forward(&batch_tensor) };
 
         // Compute loss
-        let loss = loss_fn.forward(&predictions, &batch_labels);
+        let loss = {
+            let _span = info_span!("compute_loss").entered();
+            loss_fn.forward(&predictions, &batch_labels)
+        };
         total_loss += loss.data[0];
 
         // Backward pass
-        loss.backward();
+        {
+            let _span = info_span!("backward").entered();
+            loss.backward();
+        }
 
         // Optimizer step
-        optimizer.step(&mut model.parameters());
+        {
+            let _span = info_span!("optimizer_step").entered();
+            optimizer.step(&mut model.parameters());
+        }
     }
 
     total_loss / n_batches as f32
@@ -143,6 +164,14 @@ fn train_epoch<L: Loss>(
 fn main() {
     // Parse command-line arguments
     let args = Args::parse();
+
+    // Initialize tracing with Chrome trace output
+    let (chrome_layer, _guard) = tracing_chrome::ChromeLayerBuilder::new()
+        .file("./trace.json")
+        .build();
+
+    use tracing_subscriber::prelude::*;
+    tracing_subscriber::registry().with(chrome_layer).init();
 
     println!("=== Neural Network Training System ===\n");
     println!("Hyperparameters:");
@@ -165,20 +194,28 @@ fn main() {
 
     println!("\nTraining for {} epochs...\n", args.epochs);
 
-    for epoch in 1..=args.epochs {
-        println!("--- Epoch {}/{} ---", epoch, args.epochs);
-        let avg_loss = train_epoch(
-            &mut model,
-            &loss_fn,
-            &mut optimizer,
-            &train_batch.images,
-            &train_batch.labels,
-            args.batch_size,
-        );
-        println!("Average Training Loss: {:.4}\n", avg_loss);
+    {
+        let _training_span = info_span!("training_loop").entered();
+
+        for epoch in 1..=args.epochs {
+            let _epoch_span = info_span!("epoch", epoch).entered();
+
+            println!("--- Epoch {}/{} ---", epoch, args.epochs);
+            let avg_loss = train_epoch(
+                &mut model,
+                &loss_fn,
+                &mut optimizer,
+                &train_batch.images,
+                &train_batch.labels,
+                args.batch_size,
+            );
+            println!("Average Training Loss: {:.4}\n", avg_loss);
+        }
     }
 
     println!("\n✓ Training complete!");
+    println!("Trace written to ./trace.json");
+    println!("View it at: https://ui.perfetto.dev/");
 }
 
 #[cfg(test)]

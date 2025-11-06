@@ -1,6 +1,7 @@
 use crate::tensor::Tensor;
 use crate::nn::Loss;
 use std::rc::Rc;
+use tracing::instrument;
 
 /// Mean Squared Error loss
 pub struct MSELoss;
@@ -19,6 +20,7 @@ impl Default for MSELoss {
 
 impl Loss for MSELoss {
     /// MSE = mean((predictions - targets)^2)
+    #[instrument(skip(self, predictions, targets), fields(shape = ?predictions.shape))]
     fn forward(&self, predictions: &Tensor, targets: &Tensor) -> Tensor {
         (predictions - targets).pow(2.0).mean()
     }
@@ -52,6 +54,7 @@ fn one_hot_encode(targets: &[usize], num_classes: usize) -> Vec<f32> {
 
 /// Compute log-sum-exp for numerical stability: log(sum(exp(x)))
 /// Uses the identity: log(sum(exp(x))) = max + log(sum(exp(x - max)))
+#[instrument(skip(values), fields(len = values.len()))]
 fn log_sum_exp(values: &[f32]) -> f32 {
     let max_val = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     let sum_exp: f32 = values.iter().map(|&x| (x - max_val).exp()).sum();
@@ -60,6 +63,7 @@ fn log_sum_exp(values: &[f32]) -> f32 {
 
 /// Compute softmax probabilities for a batch of logits
 /// Returns a vector of probabilities with the same shape as input
+#[instrument(skip(logits), fields(batch_size = batch_size, num_classes = num_classes))]
 fn compute_softmax(logits: &[f32], batch_size: usize, num_classes: usize) -> Vec<f32> {
     let mut softmax = vec![0.0; batch_size * num_classes];
     
@@ -91,6 +95,7 @@ impl CrossEntropyLoss {
     /// Compute cross-entropy loss
     /// logits: [batch_size, num_classes] - raw model outputs
     /// targets: [batch_size] - integer class labels (0 to num_classes-1)
+    #[instrument(skip(self, logits, targets), fields(logits_shape = ?logits.shape, num_targets = targets.len()))]
     pub fn compute(&self, logits: &Tensor, targets: &[usize]) -> Tensor {
         cross_entropy_loss(logits, targets)
     }
@@ -103,6 +108,7 @@ impl Default for CrossEntropyLoss {
 }
 
 impl Loss for CrossEntropyLoss {
+    #[instrument(skip(self, logits, targets), fields(logits_shape = ?logits.shape, targets_shape = ?targets.shape))]
     fn forward(&self, logits: &Tensor, targets: &Tensor) -> Tensor {
         let target_indices: Vec<usize> = targets.data.iter().map(|&x| x as usize).collect();
         self.compute(logits, &target_indices)
@@ -118,6 +124,7 @@ impl Loss for CrossEntropyLoss {
 /// 
 /// Formula: CE = -mean(sum(one_hot_targets * log(softmax(logits))))
 /// Gradient: d_logits = (softmax(logits) - one_hot_targets) / batch_size
+#[instrument(skip(logits, targets), fields(logits_shape = ?logits.shape, num_targets = targets.len()))]
 pub fn cross_entropy_loss(logits: &Tensor, targets: &[usize]) -> Tensor {
     assert_eq!(logits.shape.len(), 2, "logits must be 2D [batch, classes]");
     let batch_size = logits.shape[0];
@@ -172,7 +179,7 @@ pub fn cross_entropy_loss(logits: &Tensor, targets: &[usize]) -> Tensor {
         });
         
         // Use with_grad to hook into autograd
-        result = Tensor::with_grad(result, vec![logits], backward_fn);
+        result = Tensor::with_grad(result, vec![logits], "cross_entropy_backward", backward_fn);
     }
 
     result

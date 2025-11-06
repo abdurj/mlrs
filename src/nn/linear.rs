@@ -1,11 +1,12 @@
 use crate::{tensor::Tensor, Layer};
+use tracing::instrument;
 
 /// Linear (fully-connected) layer: y = xW + b
 pub struct Linear {
     pub weight: Tensor,
     pub bias: Tensor,
-    in_features: usize,
-    out_features: usize,
+    pub in_features: usize,
+    pub out_features: usize,
 }
 
 impl Linear {
@@ -26,6 +27,7 @@ impl Linear {
     }
 
     /// Forward pass: y = xW + b
+    #[instrument(skip(self, input), fields(in_shape = ?input.shape, out_features = self.out_features))]
     pub fn forward(&self, input: &Tensor) -> Tensor {
         assert!(input.shape[1] == self.in_features);
         let result = input.matmul(&self.weight).broadcast_add(&self.bias);
@@ -34,6 +36,7 @@ impl Linear {
     }
 
     /// Get mutable references to parameters
+    #[instrument(skip(self))]
     pub fn parameters(&mut self) -> Vec<&mut Tensor> {
         vec![&mut self.weight, &mut self.bias]
     }

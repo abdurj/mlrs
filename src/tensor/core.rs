@@ -4,6 +4,7 @@ use std::rc::Rc;
 
 use rand::distributions::Uniform;
 use rand::prelude::Distribution;
+use tracing::instrument;
 
 /// Main tensor struct that holds data and gradient information
 pub struct Tensor {
@@ -37,6 +38,8 @@ type BackwardFn = Box<dyn Fn()>;
 /// GraphNode represents a node in the computation graph
 /// Separates graph structure from tensor data
 pub struct GraphNode {
+    // Name of the operation for tracing
+    name: String,
     // Backward function for this operation
     backward_fn: BackwardFn,
     // Parent nodes in the computation graph (Rc since DAG has no cycles)
@@ -45,6 +48,7 @@ pub struct GraphNode {
 
 impl Tensor {
     /// Create a new tensor from data and shape
+    #[instrument(skip(data), fields(shape = ?shape, numel = data.len()))]
     pub fn new(data: Vec<f32>, shape: Vec<usize>) -> Self {
         let numel = shape.iter().product();
         if numel != data.len() {
@@ -71,7 +75,12 @@ impl Tensor {
 
     /// Helper to attach gradient tracking to a result tensor
     /// Takes parent tensors and a backward closure, sets up the computation graph
-    pub fn with_grad(mut result: Tensor, parents: Vec<&Tensor>, backward_fn: BackwardFn) -> Tensor {
+    pub fn with_grad(
+        mut result: Tensor,
+        parents: Vec<&Tensor>,
+        name: &str,
+        backward_fn: BackwardFn,
+    ) -> Tensor {
         result.requires_grad = true;
 
         // Collect parent graph nodes (use Rc since DAG has no cycles)
@@ -82,6 +91,7 @@ impl Tensor {
 
         // Create graph node for this result
         let node = Rc::new(GraphNode {
+            name: name.to_string(),
             backward_fn,
             prev: parent_nodes,
         });
@@ -92,7 +102,13 @@ impl Tensor {
 
     /// Helper for binary operations with gradient tracking
     /// Takes two tensors, result data, and a closure that computes gradients
-    fn binary_op<F>(&self, other: &Tensor, result_data: Vec<f32>, grad_fn: F) -> Tensor
+    fn binary_op<F>(
+        &self,
+        other: &Tensor,
+        result_data: Vec<f32>,
+        op_name: &str,
+        grad_fn: F,
+    ) -> Tensor
     where
         F: Fn(&[f32], &mut [f32], &mut [f32]) + 'static,
     {
@@ -109,6 +125,7 @@ impl Tensor {
             Self::with_grad(
                 result,
                 vec![self, other],
+                op_name,
                 Box::new(move || {
                     let grad_output = result_grad.borrow();
 
@@ -135,6 +152,7 @@ impl Tensor {
     }
 
     /// Create a tensor filled with zeros
+    #[instrument(fields(shape = ?shape, numel = shape.iter().product::<usize>()))]
     pub fn zeros(shape: Vec<usize>) -> Self {
         let numel = shape.iter().product();
         let data = vec![0.0; numel];
@@ -143,6 +161,7 @@ impl Tensor {
     }
 
     /// Create a tensor filled with ones
+    #[instrument(fields(shape = ?shape, numel = shape.iter().product::<usize>()))]
     pub fn ones(shape: Vec<usize>) -> Self {
         let numel = shape.iter().product();
         let data = vec![1.0; numel];
@@ -151,6 +170,7 @@ impl Tensor {
     }
 
     /// Create a tensor with random values between -1 and 1
+    #[instrument(fields(shape = ?shape, numel = shape.iter().product::<usize>()))]
     pub fn randn(shape: Vec<usize>) -> Self {
         let numel = shape.iter().product::<usize>();
         let mut data: Vec<f32> = vec![0.0; numel];
@@ -165,12 +185,14 @@ impl Tensor {
     }
 
     /// Builder method to enable gradient tracking
+    #[instrument(skip(self), fields(shape = ?self.shape, req = req))]
     pub fn requires_grad(mut self, req: bool) -> Self {
         self.requires_grad = req;
         self
     }
 
     /// Zero out all gradients
+    #[instrument(skip(self), fields(shape = ?self.shape, numel = self.numel))]
     pub fn zero_grad(&mut self) {
         for g in self.grad.borrow_mut().iter_mut() {
             *g = 0.0;
@@ -178,6 +200,7 @@ impl Tensor {
     }
 
     /// Reshape tensor to new shape
+    #[instrument(skip(self, new_shape), fields(old_shape = ?self.shape, new_shape = ?new_shape))]
     pub fn reshape(&self, new_shape: Vec<usize>) -> Self {
         let numel = new_shape.iter().product::<usize>();
         assert!(
@@ -194,7 +217,9 @@ impl Tensor {
             Self::with_grad(
                 result,
                 vec![self],
+                "reshape_backward",
                 Box::new(move || {
+                    let _span = tracing::info_span!("ReshapeBackward").entered();
                     let grad_output = result_grad.borrow();
                     let mut self_g = self_grad.borrow_mut();
 
@@ -210,6 +235,7 @@ impl Tensor {
     }
 
     /// Matrix multiplication
+    #[instrument(skip(self, other), fields(shape_a = ?self.shape, shape_b = ?other.shape))]
     pub fn matmul(&self, other: &Tensor) -> Tensor {
         // Use the gemm kernel for the actual matrix multiplication
         let data = super::kernels::gemm::matmul(&self.data, &self.shape, &other.data, &other.shape);
@@ -235,7 +261,9 @@ impl Tensor {
             Self::with_grad(
                 result,
                 vec![self, other],
+                "matmul_backward",
                 Box::new(move || {
+                    let _span = tracing::info_span!("MatMulBackward").entered();
                     let grad_output = result_grad.borrow();
                     let grad_shape = vec![self_shape[0], other_shape[1]];
 
@@ -267,6 +295,7 @@ impl Tensor {
     }
 
     /// Element-wise addition
+    #[instrument(skip(self, other), fields(shape = ?self.shape))]
     pub fn add(&self, other: &Tensor) -> Tensor {
         assert_eq!(self.shape, other.shape, "Shape mismatch");
         let data: Vec<f32> = self
@@ -276,15 +305,22 @@ impl Tensor {
             .map(|(a, b)| a + b)
             .collect();
 
-        self.binary_op(other, data, |grad_output, self_grad, other_grad| {
-            for i in 0..grad_output.len() {
-                self_grad[i] += grad_output[i];
-                other_grad[i] += grad_output[i];
-            }
-        })
+        self.binary_op(
+            other,
+            data,
+            "add_backward",
+            |grad_output, self_grad, other_grad| {
+                for i in 0..grad_output.len() {
+                    let _span: tracing::span::EnteredSpan = tracing::info_span!("AddBackward").entered();
+                    self_grad[i] += grad_output[i];
+                    other_grad[i] += grad_output[i];
+                }
+            },
+        )
     }
 
     /// Element-wise subtraction
+    #[instrument(skip(self, other), fields(shape = ?self.shape))]
     pub fn sub(&self, other: &Tensor) -> Tensor {
         assert_eq!(self.shape, other.shape, "Shape mismatch");
         let data: Vec<f32> = self
@@ -294,15 +330,22 @@ impl Tensor {
             .map(|(a, b)| a - b)
             .collect();
 
-        self.binary_op(other, data, |grad_output, self_grad, other_grad| {
-            for i in 0..grad_output.len() {
-                self_grad[i] += grad_output[i];
-                other_grad[i] -= grad_output[i]; // Note: negative for subtraction
-            }
-        })
+        self.binary_op(
+            other,
+            data,
+            "sub_backward",
+            |grad_output, self_grad, other_grad| {
+                for i in 0..grad_output.len() {
+                    let _span = tracing::info_span!("SubBackward").entered();
+                    self_grad[i] += grad_output[i];
+                    other_grad[i] -= grad_output[i]; // Note: negative for subtraction
+                }
+            },
+        )
     }
 
     /// Element-wise multiplication
+    #[instrument(skip(self, other), fields(shape = ?self.shape))]
     pub fn mul(&self, other: &Tensor) -> Tensor {
         assert_eq!(self.shape, other.shape, "Shape mismatch");
         let data: Vec<f32> = self
@@ -316,12 +359,18 @@ impl Tensor {
         let self_data = self.data.clone();
         let other_data = other.data.clone();
 
-        self.binary_op(other, data, move |grad_output, self_grad, other_grad| {
-            for i in 0..grad_output.len() {
-                self_grad[i] += grad_output[i] * other_data[i]; // d/dx(x*y) = y
-                other_grad[i] += grad_output[i] * self_data[i]; // d/dy(x*y) = x
-            }
-        })
+        self.binary_op(
+            other,
+            data,
+            "mul_backward",
+            move |grad_output, self_grad, other_grad| {
+                let _span = tracing::info_span!("EltwiseMulBackward").entered();
+                for i in 0..grad_output.len() {
+                    self_grad[i] += grad_output[i] * other_data[i]; // d/dx(x*y) = y
+                    other_grad[i] += grad_output[i] * self_data[i]; // d/dy(x*y) = x
+                }
+            },
+        )
     }
 
     /// Scalar multiplication
@@ -336,7 +385,9 @@ impl Tensor {
             Self::with_grad(
                 result,
                 vec![self],
+                "mul_scalar_backward",
                 Box::new(move || {
+                    let _span = tracing::info_span!("ScalarMulBackward").entered();
                     let grad_output = result_grad.borrow();
                     let mut self_g = self_grad.borrow_mut();
 
@@ -354,6 +405,7 @@ impl Tensor {
     ///
     /// Computes self^exponent for each element
     /// Gradient: d/dx(x^n) = n * x^(n-1)
+    #[instrument(skip(self), fields(shape = ?self.shape, exponent = exponent))]
     pub fn pow(&self, exponent: f32) -> Tensor {
         let data: Vec<f32> = self.data.iter().map(|x| x.powf(exponent)).collect();
         let result = Tensor::new(data, self.shape.clone());
@@ -366,7 +418,9 @@ impl Tensor {
             Self::with_grad(
                 result,
                 vec![self],
+                "pow_backward",
                 Box::new(move || {
+                    let _span = tracing::info_span!("PowBackward").entered();
                     let grad_output = result_grad.borrow();
                     let mut self_g = self_grad.borrow_mut();
 
@@ -386,6 +440,7 @@ impl Tensor {
     /// Adds `other` to `self` with broadcasting rules for 2D tensors:
     /// - If shapes are identical [M, N] + [M, N], performs element-wise addition
     /// - If `other` has shape [1, N] and `self` has shape [M, N], broadcasts `other` across all M rows
+    #[instrument(skip(self, other), fields(shape_a = ?self.shape, shape_b = ?other.shape))]
     pub fn broadcast_add(&self, other: &Tensor) -> Tensor {
         assert_eq!(
             self.shape.len(),
@@ -448,7 +503,9 @@ impl Tensor {
             Self::with_grad(
                 result,
                 vec![self, other],
+                "broadcast_add_backward",
                 Box::new(move || {
+                    let _span = tracing::info_span!("BroadcastAddBackward").entered();
                     let grad_output = result_grad.borrow();
                     let mut self_g = self_grad.borrow_mut();
                     let mut other_g = other_grad.borrow_mut();
@@ -483,6 +540,7 @@ impl Tensor {
     }
 
     /// ReLU activation: max(0, x)
+    #[instrument(skip(self), fields(shape = ?self.shape, numel = self.numel))]
     pub fn relu(&self) -> Tensor {
         let data = self.data.iter().map(|x| x.max(0.0)).collect();
         let result = Tensor::new(data, self.shape.clone());
@@ -495,7 +553,9 @@ impl Tensor {
             Self::with_grad(
                 result,
                 vec![self],
+                "relu_backward",
                 Box::new(move || {
+                    let _span = tracing::info_span!("ReLUBackward").entered();
                     let grad_output = result_grad.borrow();
                     let mut self_g = self_grad.borrow_mut();
 
@@ -512,6 +572,7 @@ impl Tensor {
     }
 
     /// Sigmoid activation: 1 / (1 + e^-x)
+    #[instrument(skip(self), fields(shape = ?self.shape, numel = self.numel))]
     pub fn sigmoid(&self) -> Tensor {
         let data = self.data.iter().map(|x| 1.0 / (1.0 + (-x).exp())).collect();
         let result = Tensor::new(data, self.shape.clone());
@@ -524,7 +585,9 @@ impl Tensor {
             Self::with_grad(
                 result,
                 vec![self],
+                "sigmoid_backward",
                 Box::new(move || {
+                    let _span = tracing::info_span!("SigmoidBackward").entered();
                     let grad_output = result_grad.borrow();
                     let mut self_g = self_grad.borrow_mut();
 
@@ -543,6 +606,7 @@ impl Tensor {
     }
 
     /// Sum all elements
+    #[instrument(skip(self), fields(shape = ?self.shape))]
     pub fn sum(&self) -> Tensor {
         self.sum_axis(None, false)
     }
@@ -552,6 +616,7 @@ impl Tensor {
     /// # Arguments
     /// * `axis` - The axis to sum along (None means sum all elements)
     /// * `keepdims` - If true, keep the reduced dimension as size 1
+    #[instrument(skip(self), fields(shape = ?self.shape, axis = ?axis, keepdims = keepdims))]
     pub fn sum_axis(&self, axis: Option<usize>, keepdims: bool) -> Tensor {
         match axis {
             None => {
@@ -566,7 +631,9 @@ impl Tensor {
                     Self::with_grad(
                         result,
                         vec![self],
+                        "sum_backward",
                         Box::new(move || {
+                            let _span = tracing::info_span!("SumBackward").entered();
                             let grad_output = result_grad.borrow();
                             let mut self_g = self_grad.borrow_mut();
 
@@ -639,7 +706,9 @@ impl Tensor {
                     Self::with_grad(
                         result,
                         vec![self],
+                        "sum_axis_backward",
                         Box::new(move || {
+                            let _span = tracing::info_span!("SumAxisBackward").entered();
                             let grad_output = result_grad.borrow();
                             let mut self_g = self_grad.borrow_mut();
 
@@ -671,6 +740,7 @@ impl Tensor {
     }
 
     /// Mean of all elements
+    #[instrument(skip(self), fields(shape = ?self.shape))]
     pub fn mean(&self) -> Tensor {
         self.mean_axis(None, false)
     }
@@ -680,6 +750,7 @@ impl Tensor {
     /// # Arguments
     /// * `axis` - The axis to take mean along (None means mean of all elements)
     /// * `keepdims` - If true, keep the reduced dimension as size 1
+    #[instrument(skip(self), fields(shape = ?self.shape, axis = ?axis, keepdims = keepdims))]
     pub fn mean_axis(&self, axis: Option<usize>, keepdims: bool) -> Tensor {
         match axis {
             None => {
@@ -696,7 +767,9 @@ impl Tensor {
                     Self::with_grad(
                         result,
                         vec![self],
+                        "mean_backward",
                         Box::new(move || {
+                            let _span = tracing::info_span!("MeanBackward").entered();
                             let grad_output = result_grad.borrow();
                             let mut self_g = self_grad.borrow_mut();
 
@@ -730,7 +803,9 @@ impl Tensor {
                     Self::with_grad(
                         result,
                         vec![self],
+                        "mean_axis_backward",
                         Box::new(move || {
+                            let _span = tracing::info_span!("MeanAxisBackward").entered();
                             let grad_output = result_grad.borrow();
                             let mut self_g = self_grad.borrow_mut();
 
@@ -762,6 +837,7 @@ impl Tensor {
     }
 
     /// Transpose a 2D tensor
+    #[instrument(skip(self), fields(shape = ?self.shape))]
     pub fn transpose(&self) -> Tensor {
         assert_eq!(self.shape.len(), 2, "Transpose only works for 2D tensors");
         let rows = self.shape[0];
@@ -783,7 +859,9 @@ impl Tensor {
             Self::with_grad(
                 result,
                 vec![self],
+                "transpose_backward",
                 Box::new(move || {
+                    let _span = tracing::info_span!("TransposeBackward").entered();
                     let grad_output = result_grad.borrow();
                     let mut self_g = self_grad.borrow_mut();
 
@@ -802,6 +880,7 @@ impl Tensor {
     }
 
     /// Backward pass - propagate gradients
+    #[instrument(skip(self), fields(shape = ?self.shape))]
     pub fn backward(&self) {
         // Initialize this tensor's gradient to 1.0 (assuming scalar output)
         {

@@ -60,6 +60,7 @@ pub fn softmax(input: &Tensor) -> Tensor {
         Tensor::with_grad(
             result,
             vec![input],
+            "softmax_backward",
             Box::new(move || {
                 let grad_output = result_grad.borrow();
                 let mut input_g = input_grad.borrow_mut();
@@ -153,6 +154,7 @@ pub fn layer_norm(input: &Tensor, eps: f32) -> Tensor {
         Tensor::with_grad(
             result,
             vec![input],
+            "layer_norm_backward",
             Box::new(move || {
                 let grad_output = result_grad.borrow();
                 let mut input_g = input_grad.borrow_mut();
