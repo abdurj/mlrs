@@ -1,6 +1,29 @@
+use clap::Parser;
 use rand::Rng;
 use rust_nn::optim::SGD;
 use rust_nn::{CrossEntropyLoss, Linear, Loss, Tensor};
+
+/// Simple neural network training for MNIST-like data
+#[derive(Parser, Debug)]
+#[command(name = "train")]
+#[command(about = "Train a simple 3-layer neural network", long_about = None)]
+struct Args {
+    /// Learning rate for SGD optimizer
+    #[arg(short, long, default_value_t = 0.01)]
+    learning_rate: f32,
+
+    /// Batch size for training
+    #[arg(short, long, default_value_t = 32)]
+    batch_size: usize,
+
+    /// Number of training epochs
+    #[arg(short, long, default_value_t = 10)]
+    epochs: usize,
+
+    /// Number of training samples to generate
+    #[arg(short, long, default_value_t = 1000)]
+    num_samples: usize,
+}
 
 /// Simple 3-layer neural network for MNIST
 #[allow(dead_code)]
@@ -118,39 +141,44 @@ fn train_epoch<L: Loss>(
 }
 
 fn main() {
+    // Parse command-line arguments
+    let args = Args::parse();
+
     println!("=== Neural Network Training System ===\n");
+    println!("Hyperparameters:");
+    println!("  Learning Rate: {}", args.learning_rate);
+    println!("  Batch Size: {}", args.batch_size);
+    println!("  Epochs: {}", args.epochs);
+    println!("  Training Samples: {}\n", args.num_samples);
 
     let mut model = SimpleNet::new();
 
     // Create loss function (separate from optimizer, PyTorch style)
     let loss_fn = CrossEntropyLoss::new();
 
-    // Create optimizer (just needs learning rate)
-    let mut optimizer = SGD::new(0.01);
+    // Create optimizer with specified learning rate
+    let mut optimizer = SGD::new(args.learning_rate);
 
     // Generate dummy data
     println!("Generating training data...");
-    let train_batch = generate_dummy_data(1000);
-    let _test_batch = generate_dummy_data(200);
+    let train_batch = generate_dummy_data(args.num_samples);
 
-    // Training loop
-    let epochs = 100;
-    let batch_size = 64;
+    println!("\nTraining for {} epochs...\n", args.epochs);
 
-    println!("\nTraining for {} epochs...\n", epochs);
-
-    for epoch in 1..=epochs {
-        println!("--- Epoch {}/{} ---", epoch, epochs);
+    for epoch in 1..=args.epochs {
+        println!("--- Epoch {}/{} ---", epoch, args.epochs);
         let avg_loss = train_epoch(
             &mut model,
             &loss_fn,
             &mut optimizer,
             &train_batch.images,
             &train_batch.labels,
-            batch_size,
+            args.batch_size,
         );
         println!("Average Training Loss: {:.4}\n", avg_loss);
     }
+
+    println!("\n✓ Training complete!");
 }
 
 #[cfg(test)]
