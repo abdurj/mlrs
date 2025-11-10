@@ -1,3 +1,122 @@
+/*
+Metal vs CPU Matrix Multiplication Benchmarks
+==============================================
+
+
+Running: Large Square (1024x1024x1024)
+  Generating random matrices...
+  Benchmarking CPU Cache-Aware... done
+  Benchmarking CPU Tiled... done
+  Benchmarking Metal GPU... done
+
+Large Square (1024x1024x1024)
+================================================================================
+Variant                 Latency (ms)         Speedup          GFLOPS
+--------------------------------------------------------------------------------
+CPU Cache-Aware              147.411            1.00x           14.57
+CPU Tiled                    359.215            0.41x            5.98
+Metal GPU                      5.683           25.94x          377.88
+
+Running: Very Large Square (2048x2048x2048)
+  Generating random matrices...
+  Benchmarking CPU Cache-Aware... done
+  Benchmarking CPU Tiled... done
+  Benchmarking Metal GPU... done
+
+Very Large Square (2048x2048x2048)
+================================================================================
+Variant                 Latency (ms)         Speedup          GFLOPS
+--------------------------------------------------------------------------------
+CPU Cache-Aware             1207.284            1.00x           14.23
+CPU Tiled                   2838.431            0.43x            6.05
+Metal GPU                     17.111           70.56x         1004.05
+
+Running: Huge Square (4096x4096x4096)
+  Generating random matrices...
+  Benchmarking CPU Cache-Aware... done
+  Benchmarking CPU Tiled... done
+  Benchmarking Metal GPU... done
+
+Huge Square (4096x4096x4096)
+================================================================================
+Variant                 Latency (ms)         Speedup          GFLOPS
+--------------------------------------------------------------------------------
+CPU Cache-Aware            11204.396            1.00x           12.27
+CPU Tiled                  24154.752            0.46x            5.69
+Metal GPU                    211.020           53.10x          651.31
+
+Running: Large Batch GEMM (256x4096x4096)
+  Generating random matrices...
+  Benchmarking CPU Cache-Aware... done
+  Benchmarking CPU Tiled... done
+  Benchmarking Metal GPU... done
+
+Large Batch GEMM (256x4096x4096)
+================================================================================
+Variant                 Latency (ms)         Speedup          GFLOPS
+--------------------------------------------------------------------------------
+CPU Cache-Aware              731.814            1.00x           11.74
+CPU Tiled                   1480.309            0.49x            5.80
+Metal GPU                     10.876           67.29x          789.83
+
+Running: Wide Matrix (512x8192x512)
+  Generating random matrices...
+  Benchmarking CPU Cache-Aware... done
+  Benchmarking CPU Tiled... done
+  Benchmarking Metal GPU... done
+
+Wide Matrix (512x8192x512)
+================================================================================
+Variant                 Latency (ms)         Speedup          GFLOPS
+--------------------------------------------------------------------------------
+CPU Cache-Aware              366.708            1.00x           11.71
+CPU Tiled                    681.671            0.54x            6.30
+Metal GPU                      7.186           51.03x          597.72
+
+Running: Tall Matrix (8192x512x512)
+  Generating random matrices...
+  Benchmarking CPU Cache-Aware... done
+  Benchmarking CPU Tiled... done
+  Benchmarking Metal GPU... done
+
+Tall Matrix (8192x512x512)
+================================================================================
+Variant                 Latency (ms)         Speedup          GFLOPS
+--------------------------------------------------------------------------------
+CPU Cache-Aware              316.134            1.00x           13.59
+CPU Tiled                    709.828            0.45x            6.05
+Metal GPU                     14.588           21.67x          294.42
+
+Running: Deep Learning (Forward) (128x4096x1024)
+  Generating random matrices...
+  Benchmarking CPU Cache-Aware... done
+  Benchmarking CPU Tiled... done
+  Benchmarking Metal GPU... done
+
+Deep Learning (Forward) (128x4096x1024)
+================================================================================
+Variant                 Latency (ms)         Speedup          GFLOPS
+--------------------------------------------------------------------------------
+CPU Cache-Aware               79.929            1.00x           13.43
+CPU Tiled                    170.594            0.47x            6.29
+Metal GPU                      3.171           25.20x          338.57
+
+Running: Deep Learning (Backward) (4096x128x1024)
+  Generating random matrices...
+  Benchmarking CPU Cache-Aware... done
+  Benchmarking CPU Tiled... done
+  Benchmarking Metal GPU... done
+
+Deep Learning (Backward) (4096x128x1024)
+================================================================================
+Variant                 Latency (ms)         Speedup          GFLOPS
+--------------------------------------------------------------------------------
+CPU Cache-Aware               76.040            1.00x           14.12
+CPU Tiled                    168.552            0.45x            6.37
+Metal GPU                      5.847           13.00x          183.64
+
+*/
+
 use rust_nn::tensor::Tensor;
 use std::time::Instant;
 
@@ -216,3 +335,4 @@ fn main() {
     #[cfg(all(target_os = "macos", feature = "metal"))]
     println!("\nNote: Metal GPU acceleration was used for large matrix operations.");
 }
+
