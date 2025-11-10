@@ -167,7 +167,7 @@ fn main() {
 
     // Initialize tracing with Chrome trace output
     let (chrome_layer, _guard) = tracing_chrome::ChromeLayerBuilder::new()
-        .file("./trace.json")
+        .file(".traces/trace.json")
         .build();
 
     use tracing_subscriber::prelude::*;
