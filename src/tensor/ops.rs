@@ -3,6 +3,8 @@
 //! This module contains higher-level tensor operations like softmax,
 //! layer normalization, and other common neural network operations.
 
+use tracing::debug_span;
+
 use super::Tensor;
 use std::rc::Rc;
 
@@ -60,8 +62,8 @@ pub fn softmax(input: &Tensor) -> Tensor {
         Tensor::with_grad(
             result,
             vec![input],
-            "softmax_backward",
             Box::new(move || {
+                let _span = debug_span!("SoftmaxBackward").entered();
                 let grad_output = result_grad.borrow();
                 let mut input_g = input_grad.borrow_mut();
 
@@ -154,8 +156,8 @@ pub fn layer_norm(input: &Tensor, eps: f32) -> Tensor {
         Tensor::with_grad(
             result,
             vec![input],
-            "layer_norm_backward",
             Box::new(move || {
+                let _span = debug_span!("LayerNormBackward").entered();
                 let grad_output = result_grad.borrow();
                 let mut input_g = input_grad.borrow_mut();
 

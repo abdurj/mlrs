@@ -12,25 +12,30 @@ name = "train"
 path = "src/main.rs"
 required-features = []
 
-[[bin]]
+[[bench]]
 name = "matmul_bench"
-path = "benches/matmul_bench.rs"
+harness = false
 
-[[bin]]
+[[bench]]
 name = "tile_size_bench"
-path = "benches/tile_size_bench.rs"
+harness = false
 
-[[bin]]
+[[bench]]
 name = "tile_3d_bench"
-path = "benches/tile_3d_bench.rs"
+harness = false
 
-[[bin]]
+[[bench]]
 name = "metal_bench"
-path = "benches/metal_bench.rs"
+harness = false
+
+[[bench]]
+name = "accelerate_vs_metal_bench"
+harness = false
 
 [features]
-default = ["metal"]
+default = ["metal", "accelerate"]
 metal = ["dep:objc2-metal", "dep:objc2-metal-performance-shaders", "dep:objc2-foundation", "dep:objc2"]
+accelerate = []
 
 [dependencies]
 rand = "0.8"

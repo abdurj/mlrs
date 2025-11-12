@@ -18,16 +18,24 @@
 /// * `transpose_right` - Whether to transpose B
 /// * `c_data` - Output buffer to accumulate into
 /// * `alpha` - Scaling factor (usually 1.0)
-struct GemmParams<'a> {
-    a_data: &'a [f32],
-    a_shape: [usize; 2],
-    transpose_left: bool,
-    b_data: &'a [f32],
-    b_shape: [usize; 2],
-    transpose_right: bool,
-    c_data: &'a mut [f32],
-    alpha: f32,
+pub(crate) struct GemmParams<'a> {
+    pub a_data: &'a [f32],
+    pub a_shape: [usize; 2],
+    pub transpose_left: bool,
+    pub b_data: &'a [f32],
+    pub b_shape: [usize; 2],
+    pub transpose_right: bool,
+    pub c_data: &'a mut [f32],
+    pub alpha: f32,
 }
 
 pub mod cpu_gemm;
 pub mod metal_gemm;
+pub mod amx_gemm;
+pub mod backend;
+
+// Re-export the unified backend API for easy access
+pub use backend::{
+    matmul, matmul_backward_left, matmul_backward_right, matmul_with_config, Backend,
+    MatmulConfig, available_backends, print_backend_info,
+};

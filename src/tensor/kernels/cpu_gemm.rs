@@ -1,8 +1,7 @@
 use crate::tensor::kernels::GemmParams;
 
 /// General Matrix Multiply (GEMM) operations
-
-fn gemm_core(params: GemmParams) {
+pub(crate) fn gemm_core(params: GemmParams) {
     let GemmParams {
         a_data,
         a_shape,
