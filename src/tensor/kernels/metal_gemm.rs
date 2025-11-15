@@ -104,7 +104,7 @@ pub(crate) mod metal_backend {
             let a_buffer = unsafe {
                 ctx.device.newBufferWithBytes_length_options(
                     NonNull::new(a_data.as_ptr() as *mut _).unwrap(),
-                    a_data.len() * std::mem::size_of::<f32>(),
+                    std::mem::size_of_val(a_data),
                     MTLResourceOptions::StorageModeShared,
                 )
             }
@@ -113,7 +113,7 @@ pub(crate) mod metal_backend {
             let b_buffer = unsafe {
                 ctx.device.newBufferWithBytes_length_options(
                     NonNull::new(b_data.as_ptr() as *mut _).unwrap(),
-                    b_data.len() * std::mem::size_of::<f32>(),
+                    std::mem::size_of_val(b_data),
                     MTLResourceOptions::StorageModeShared,
                 )
             }
@@ -122,7 +122,7 @@ pub(crate) mod metal_backend {
             let c_buffer = ctx
                 .device
                 .newBufferWithLength_options(
-                    c_data.len() * std::mem::size_of::<f32>(),
+                    std::mem::size_of_val(c_data),
                     MTLResourceOptions::StorageModeShared,
                 )
                 .ok_or("Failed to create buffer C")?;

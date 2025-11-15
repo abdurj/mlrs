@@ -511,25 +511,31 @@ impl Tensor {
 
                     if is_broadcast {
                         // Broadcast case: [M, N] + [1, N]
-                        // Gradient for self: 1:1 mapping
-                        for i in 0..grad_output.len() {
-                            self_g[i] += grad_output[i];
-                        }
+                        // Gradient for self: 1:1 mapping (vectorizable)
+                        self_g
+                            .iter_mut()
+                            .zip(grad_output.iter())
+                            .for_each(|(g, grad)| *g += grad);
 
                         // Gradient for other: sum across the broadcast dimension (rows)
+                        // Optimized: process column by column with iterator chunks
                         for j in 0..cols {
-                            let mut sum = 0.0;
-                            for i in 0..rows {
-                                sum += grad_output[i * cols + j];
-                            }
+                            // Sum column j across all rows using iterator (auto-vectorizable)
+                            let sum: f32 = (0..rows)
+                                .map(|i| grad_output[i * cols + j])
+                                .sum();
                             other_g[j] += sum;
                         }
                     } else {
-                        // Same shape: gradient flows equally
-                        for i in 0..grad_output.len() {
-                            self_g[i] += grad_output[i];
-                            other_g[i] += grad_output[i];
-                        }
+                        // Same shape: gradient flows equally (vectorizable)
+                        self_g
+                            .iter_mut()
+                            .zip(other_g.iter_mut())
+                            .zip(grad_output.iter())
+                            .for_each(|((sg, og), grad)| {
+                                *sg += grad;
+                                *og += grad;
+                            });
                     }
                 }),
             )
@@ -547,7 +553,9 @@ impl Tensor {
         if self.requires_grad {
             let self_grad = Rc::clone(&self.grad);
             let result_grad = Rc::clone(&result.grad);
-            let input_data = self.data.clone(); // Clone Vec<f32> for the mask
+            // Use compact f32 mask (0.0 or 1.0) for branchless backward pass
+            // Branchless code avoids pipeline stalls from branch mispredictions
+            let mask: Vec<f32> = self.data.iter().map(|&x| if x > 0.0 { 1.0 } else { 0.0 }).collect();
 
             Self::with_grad(
                 result,
@@ -557,11 +565,15 @@ impl Tensor {
                     let grad_output = result_grad.borrow();
                     let mut self_g = self_grad.borrow_mut();
 
-                    for i in 0..grad_output.len() {
-                        if input_data[i] > 0.0 {
-                            self_g[i] += grad_output[i];
-                        }
-                    }
+                    // Branchless vectorizable loop: multiply gradient by mask (0.0 or 1.0)
+                    // LLVM can auto-vectorize this into SIMD instructions
+                    self_g
+                        .iter_mut()
+                        .zip(grad_output.iter())
+                        .zip(mask.iter())
+                        .for_each(|((g, grad_out), &m)| {
+                            *g += grad_out * m;
+                        });
                 }),
             )
         } else {

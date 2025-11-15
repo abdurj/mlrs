@@ -8,6 +8,8 @@
 //! 2. Matrix size heuristics (automatic selection based on operation count)
 //! 3. Environment variables (for easy experimentation)
 
+use std::str::FromStr;
+
 use super::{cpu_gemm, GemmParams};
 
 #[cfg(all(target_os = "macos", feature = "accelerate"))]
@@ -68,17 +70,6 @@ impl Backend {
         }
     }
 
-    /// Parse backend from string (case-insensitive)
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "cpu" => Some(Backend::Cpu),
-            "accelerate" | "amx" => Some(Backend::Accelerate),
-            "metal" | "gpu" => Some(Backend::Metal),
-            "auto" => Some(Backend::Auto),
-            _ => None,
-        }
-    }
-
     /// Select the best backend based on matrix size and available backends
     fn select_for_size(&self, ops: usize) -> Backend {
         match self {
@@ -88,7 +79,7 @@ impl Backend {
                 // - Small matrices (< 100k ops): Accelerate if available (low overhead)
                 // - Medium matrices (100k - 10M ops): Accelerate preferred
                 // - Large matrices (> 10M ops): Metal or Accelerate, both are good
-                
+
                 if ops < 1000 {
                     Backend::Cpu
                 } else if ops < 10_000_000 {
@@ -97,12 +88,12 @@ impl Backend {
                     if amx_gemm::has_accelerate_support() {
                         return Backend::Accelerate;
                     }
-                    
+
                     #[cfg(all(target_os = "macos", feature = "metal"))]
                     if metal_gemm::has_metal_support() {
                         return Backend::Metal;
                     }
-                    
+
                     Backend::Cpu
                 } else {
                     // For very large matrices, Metal and Accelerate are both excellent
@@ -111,17 +102,43 @@ impl Backend {
                     if metal_gemm::has_metal_support() {
                         return Backend::Metal;
                     }
-                    
+
                     #[cfg(all(target_os = "macos", feature = "accelerate"))]
                     if amx_gemm::has_accelerate_support() {
                         return Backend::Accelerate;
                     }
-                    
+
                     Backend::Cpu
                 }
             }
             // For explicit backend selection, return as-is
             _ => *self,
+        }
+    }
+}
+
+/// Error type for backend parsing
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseBackendError;
+
+impl std::fmt::Display for ParseBackendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "invalid backend name")
+    }
+}
+
+impl std::error::Error for ParseBackendError {}
+
+impl FromStr for Backend {
+    type Err = ParseBackendError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "cpu" => Ok(Backend::Cpu),
+            "accelerate" | "amx" => Ok(Backend::Accelerate),
+            "metal" | "gpu" => Ok(Backend::Metal),
+            "auto" => Ok(Backend::Auto),
+            _ => Err(ParseBackendError),
         }
     }
 }
@@ -142,7 +159,7 @@ impl Default for MatmulConfig {
         // Check environment variable for backend override
         let backend = std::env::var("RUST_NN_BACKEND")
             .ok()
-            .and_then(|s| Backend::from_str(&s))
+            .and_then(|s| s.parse().ok())
             .unwrap_or(Backend::Auto);
 
         let debug_backend_selection = std::env::var("RUST_NN_DEBUG_BACKEND")
@@ -255,7 +272,13 @@ fn gemm_with_backend(params: GemmParams, config: &MatmulConfig) -> Result<(), St
 
 /// Matrix multiplication: C = A @ B
 pub fn matmul(a_data: &[f32], a_shape: &[usize], b_data: &[f32], b_shape: &[usize]) -> Vec<f32> {
-    matmul_with_config(a_data, a_shape, b_data, b_shape, &MatmulConfig::prefer_accelerate())
+    matmul_with_config(
+        a_data,
+        a_shape,
+        b_data,
+        b_shape,
+        &MatmulConfig::prefer_accelerate(),
+    )
 }
 
 /// Matrix multiplication with custom configuration
@@ -365,7 +388,7 @@ pub fn matmul_backward_left_with_config(
         config,
     );
 
-    if let Err(_) = gemm_result {
+    if gemm_result.is_err() {
         cpu_gemm::matmul_backward_left(grad_output, grad_shape, b_data, b_shape, a_grad);
     }
 }
@@ -421,7 +444,7 @@ pub fn matmul_backward_right_with_config(
         config,
     );
 
-    if let Err(_) = gemm_result {
+    if gemm_result.is_err() {
         cpu_gemm::matmul_backward_right(a_data, a_shape, grad_output, grad_shape, b_grad);
     }
 }
@@ -455,7 +478,7 @@ pub fn print_backend_info() {
     println!("  export RUST_NN_BACKEND=accelerate # Force Apple Accelerate (AMX)");
     println!("  export RUST_NN_BACKEND=metal      # Force Metal (GPU)");
     println!("  export RUST_NN_BACKEND=auto       # Automatic selection (default)");
-    
+
     println!("\nTo debug backend selection:");
     println!("  export RUST_NN_DEBUG_BACKEND=1");
 }
@@ -482,14 +505,14 @@ mod tests {
 
     #[test]
     fn test_backend_from_string() {
-        assert_eq!(Backend::from_str("cpu"), Some(Backend::Cpu));
-        assert_eq!(Backend::from_str("CPU"), Some(Backend::Cpu));
-        assert_eq!(Backend::from_str("accelerate"), Some(Backend::Accelerate));
-        assert_eq!(Backend::from_str("AMX"), Some(Backend::Accelerate));
-        assert_eq!(Backend::from_str("metal"), Some(Backend::Metal));
-        assert_eq!(Backend::from_str("GPU"), Some(Backend::Metal));
-        assert_eq!(Backend::from_str("auto"), Some(Backend::Auto));
-        assert_eq!(Backend::from_str("invalid"), None);
+        assert_eq!(Backend::from_str("cpu"), Ok(Backend::Cpu));
+        assert_eq!(Backend::from_str("CPU"), Ok(Backend::Cpu));
+        assert_eq!(Backend::from_str("accelerate"), Ok(Backend::Accelerate));
+        assert_eq!(Backend::from_str("AMX"), Ok(Backend::Accelerate));
+        assert_eq!(Backend::from_str("metal"), Ok(Backend::Metal));
+        assert_eq!(Backend::from_str("GPU"), Ok(Backend::Metal));
+        assert_eq!(Backend::from_str("auto"), Ok(Backend::Auto));
+        assert_eq!(Backend::from_str("invalid"), Err(ParseBackendError));
     }
 
     #[test]

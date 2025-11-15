@@ -140,40 +140,34 @@ pub fn cross_entropy_loss(logits: &Tensor, targets: &[usize]) -> Tensor {
         "targets length must match batch_size"
     );
 
-    // Compute loss value using log-sum-exp for numerical stability
+    let softmax_probs = compute_softmax(&logits.data, batch_size, num_classes);
+
+    // Compute loss using cached softmax: -log(softmax[target_class])
     let mut total_loss = 0.0;
     for (i, &target_class) in targets.iter().enumerate().take(batch_size) {
         let offset = i * num_classes;
-        let sample_logits = &logits.data[offset..offset + num_classes];
-
-        let lse = log_sum_exp(sample_logits);
-
-        total_loss += lse - sample_logits[target_class];
+        // CE = -log(p_target) where p_target is softmax probability of correct class
+        total_loss += -softmax_probs[offset + target_class].ln();
     }
 
     let loss_value = total_loss / (batch_size as f32);
     let mut result = Tensor::new(vec![loss_value], vec![1]);
 
-    // Set up autograd if logits requires gradients
     if logits.requires_grad {
         result.requires_grad = true;
 
-        // Clone data needed for backward pass
         let logits_grad = Rc::clone(&logits.grad);
-        let logits_data = logits.data.clone();
         let targets_vec = targets.to_vec();
         let shape = logits.shape.clone();
 
-        // Create backward function
+
         let backward_fn = Box::new(move || {
             let _span = debug_span!("CrossEntropyLossBackward").entered();
             let mut grad = logits_grad.borrow_mut();
             let batch_size = shape[0];
             let num_classes = shape[1];
 
-            // Compute softmax probabilities for all samples
-            let softmax_probs = compute_softmax(&logits_data, batch_size, num_classes);
-
+            // Use cached softmax probabilities, moved into closure
             // Gradient: (softmax - one_hot) / batch_size
             for (i, &target_class) in targets_vec.iter().enumerate().take(batch_size) {
                 let offset = i * num_classes;
