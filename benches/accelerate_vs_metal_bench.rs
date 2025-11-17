@@ -254,10 +254,10 @@ fn main() {
     // Summary
     println!("\n📊 Summary:");
     println!("  • CPU backend: Always available, good for small matrices");
-    
+
     #[cfg(all(target_os = "macos", feature = "accelerate"))]
     println!("  • Accelerate (AMX): Excellent for all sizes, low overhead");
-    
+
     #[cfg(all(target_os = "macos", feature = "metal"))]
     println!("  • Metal (GPU): Best for very large matrices, has launch overhead");
 

@@ -331,8 +331,7 @@ fn main() {
 
     println!("\n{}", "=".repeat(80));
     println!("Benchmark complete!");
-    
+
     #[cfg(all(target_os = "macos", feature = "metal"))]
     println!("\nNote: Metal GPU acceleration was used for large matrix operations.");
 }
-

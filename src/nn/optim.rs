@@ -17,10 +17,12 @@ impl SGD {
     #[instrument(skip(self, parameters), fields(num_params = parameters.len(), lr = self.learning_rate))]
     pub fn step(&self, parameters: &mut [&mut Tensor]) {
         parameters.iter_mut().for_each(|param| {
+            let grad_storage = param.grad_storage();
             param
-                .data
+                .data_storage_mut()
+                .borrow_mut()
                 .iter_mut()
-                .zip(param.grad.borrow().iter())
+                .zip(grad_storage.borrow().iter())
                 .for_each(|(p, g)| {
                     *p -= self.learning_rate * *g;
                 });

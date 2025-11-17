@@ -23,20 +23,20 @@ pub(crate) mod accelerate_backend {
         /// All pointers must be valid and properly aligned.
         /// Matrix dimensions must be consistent with the memory layouts.
         fn cblas_sgemm(
-            order: i32,        // CblasRowMajor (101) or CblasColMajor (102)
-            trans_a: i32,      // CblasNoTrans (111) or CblasTrans (112)
-            trans_b: i32,      // CblasNoTrans (111) or CblasTrans (112)
-            m: i32,            // Number of rows in op(A) and C
-            n: i32,            // Number of columns in op(B) and C
-            k: i32,            // Number of columns in op(A) and rows in op(B)
-            alpha: f32,        // Scaling factor for A*B
-            a: *const f32,     // Matrix A
-            lda: i32,          // Leading dimension of A
-            b: *const f32,     // Matrix B
-            ldb: i32,          // Leading dimension of B
-            beta: f32,         // Scaling factor for C
-            c: *mut f32,       // Matrix C (output)
-            ldc: i32,          // Leading dimension of C
+            order: i32,    // CblasRowMajor (101) or CblasColMajor (102)
+            trans_a: i32,  // CblasNoTrans (111) or CblasTrans (112)
+            trans_b: i32,  // CblasNoTrans (111) or CblasTrans (112)
+            m: i32,        // Number of rows in op(A) and C
+            n: i32,        // Number of columns in op(B) and C
+            k: i32,        // Number of columns in op(A) and rows in op(B)
+            alpha: f32,    // Scaling factor for A*B
+            a: *const f32, // Matrix A
+            lda: i32,      // Leading dimension of A
+            b: *const f32, // Matrix B
+            ldb: i32,      // Leading dimension of B
+            beta: f32,     // Scaling factor for C
+            c: *mut f32,   // Matrix C (output)
+            ldc: i32,      // Leading dimension of C
         );
     }
 
@@ -224,10 +224,7 @@ pub fn matmul_with_config(
         }) {
             // Fall through to CPU if Accelerate fails
             #[cfg(debug_assertions)]
-            eprintln!(
-                "Accelerate matmul failed ({}), falling back to CPU",
-                e
-            );
+            eprintln!("Accelerate matmul failed ({}), falling back to CPU", e);
         } else {
             return result;
         }

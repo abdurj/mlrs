@@ -16,10 +16,26 @@ pub(crate) fn gemm_core(params: GemmParams) {
     // Calculate dimensions based on transpose flags
     // For op(A): if transposed, [k x m], otherwise [m x k]
     // For op(B): if transposed, [n x k], otherwise [k x n]
-    let m = if transpose_left { a_shape[1] } else { a_shape[0] };
-    let k_a = if transpose_left { a_shape[0] } else { a_shape[1] };
-    let k_b = if transpose_right { b_shape[1] } else { b_shape[0] };
-    let n = if transpose_right { b_shape[0] } else { b_shape[1] };
+    let m = if transpose_left {
+        a_shape[1]
+    } else {
+        a_shape[0]
+    };
+    let k_a = if transpose_left {
+        a_shape[0]
+    } else {
+        a_shape[1]
+    };
+    let k_b = if transpose_right {
+        b_shape[1]
+    } else {
+        b_shape[0]
+    };
+    let n = if transpose_right {
+        b_shape[0]
+    } else {
+        b_shape[1]
+    };
 
     assert_eq!(k_a, k_b, "Inner dimension mismatch: {} != {}", k_a, k_b);
     assert_eq!(c_data.len(), m * n, "Output buffer size mismatch");

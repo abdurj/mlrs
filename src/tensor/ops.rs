@@ -6,7 +6,6 @@
 use tracing::debug_span;
 
 use super::Tensor;
-use std::rc::Rc;
 
 /// Softmax activation along the last axis
 ///
@@ -26,6 +25,7 @@ pub fn softmax(input: &Tensor) -> Tensor {
     let outer_size = if outer_size == 0 { 1 } else { outer_size };
 
     let mut data = vec![0.0; input.numel()];
+    let input_data = input.data();
 
     // Process each vector along the last axis
     for outer in 0..outer_size {
@@ -34,13 +34,13 @@ pub fn softmax(input: &Tensor) -> Tensor {
         // Find max for numerical stability
         let mut max_val = f32::NEG_INFINITY;
         for i in 0..axis_size {
-            max_val = max_val.max(input.data[base_idx + i]);
+            max_val = max_val.max(input_data[base_idx + i]);
         }
 
         // Compute exp(x - max) and sum
         let mut sum = 0.0;
         for i in 0..axis_size {
-            let exp_val = (input.data[base_idx + i] - max_val).exp();
+            let exp_val = (input_data[base_idx + i] - max_val).exp();
             data[base_idx + i] = exp_val;
             sum += exp_val;
         }
@@ -54,9 +54,9 @@ pub fn softmax(input: &Tensor) -> Tensor {
     let result = Tensor::new(data, input.shape.clone());
 
     if input.requires_grad {
-        let input_grad = Rc::clone(&input.grad);
-        let result_grad = Rc::clone(&result.grad);
-        let result_data = result.data.clone();
+        let input_grad = input.grad_storage();
+        let result_grad = result.grad_storage();
+        let result_data = result.data();
         let shape = input.shape.clone();
 
         Tensor::with_grad(
@@ -117,6 +117,7 @@ pub fn layer_norm(input: &Tensor, eps: f32) -> Tensor {
     let outer_size = if outer_size == 0 { 1 } else { outer_size };
 
     let mut data = vec![0.0; input.numel()];
+    let input_data = input.data();
 
     // Compute mean and variance for each vector
     for outer in 0..outer_size {
@@ -125,14 +126,14 @@ pub fn layer_norm(input: &Tensor, eps: f32) -> Tensor {
         // Compute mean
         let mut sum = 0.0;
         for i in 0..axis_size {
-            sum += input.data[base_idx + i];
+            sum += input_data[base_idx + i];
         }
         let mean = sum / axis_size as f32;
 
         // Compute variance
         let mut var_sum = 0.0;
         for i in 0..axis_size {
-            let diff = input.data[base_idx + i] - mean;
+            let diff = input_data[base_idx + i] - mean;
             var_sum += diff * diff;
         }
         let variance = var_sum / axis_size as f32;
@@ -140,18 +141,18 @@ pub fn layer_norm(input: &Tensor, eps: f32) -> Tensor {
         // Normalize
         let std = (variance + eps).sqrt();
         for i in 0..axis_size {
-            data[base_idx + i] = (input.data[base_idx + i] - mean) / std;
+            data[base_idx + i] = (input_data[base_idx + i] - mean) / std;
         }
     }
 
     let result = Tensor::new(data, input.shape.clone());
 
     if input.requires_grad {
-        let input_grad = Rc::clone(&input.grad);
-        let result_grad = Rc::clone(&result.grad);
-        let result_data = result.data.clone();
+        let input_grad = input.grad_storage();
+        let result_grad = result.grad_storage();
+        let result_data = result.data();
         let shape = input.shape.clone();
-        let input_data = input.data.clone();
+        let input_data = input.data();
 
         Tensor::with_grad(
             result,
@@ -223,15 +224,15 @@ mod tests {
         let y = softmax(&x);
 
         // Check that output sums to 1
-        let sum: f32 = y.data.iter().sum();
+        let sum: f32 = y.data().iter().sum();
         assert!((sum - 1.0).abs() < 1e-6);
 
         // Check that all values are positive
-        assert!(y.data.iter().all(|&v| v > 0.0));
+        assert!(y.data().iter().all(|&v| v > 0.0));
 
         // Check that larger inputs produce larger outputs
-        assert!(y.data[2] > y.data[1]);
-        assert!(y.data[1] > y.data[0]);
+        assert!(y.data()[2] > y.data()[1]);
+        assert!(y.data()[1] > y.data()[0]);
 
         println!("✓ Softmax forward test passed!");
     }
@@ -244,7 +245,8 @@ mod tests {
 
         y.backward();
 
-        let x_grad = x.grad.borrow();
+        let x_grad_storage = x.grad_storage();
+        let x_grad = x_grad_storage.borrow();
         // Gradient should sum to 0 (property of softmax)
         let grad_sum: f32 = x_grad.iter().sum();
         assert!(grad_sum.abs() < 1e-6);
@@ -260,8 +262,8 @@ mod tests {
         let y = softmax(&x);
 
         // Check each row sums to 1
-        let row1_sum: f32 = y.data[0..3].iter().sum();
-        let row2_sum: f32 = y.data[3..6].iter().sum();
+        let row1_sum: f32 = y.data()[0..3].iter().sum();
+        let row2_sum: f32 = y.data()[3..6].iter().sum();
         assert!((row1_sum - 1.0).abs() < 1e-6);
         assert!((row2_sum - 1.0).abs() < 1e-6);
 
@@ -275,11 +277,11 @@ mod tests {
         let y = layer_norm(&x, 1e-5);
 
         // Check mean is approximately 0
-        let mean: f32 = y.data.iter().sum::<f32>() / y.data.len() as f32;
+        let mean: f32 = y.data().iter().sum::<f32>() / y.data().len() as f32;
         assert!(mean.abs() < 1e-5);
 
         // Check variance is approximately 1
-        let variance: f32 = y.data.iter().map(|&v| v * v).sum::<f32>() / y.data.len() as f32;
+        let variance: f32 = y.data().iter().map(|&v| v * v).sum::<f32>() / y.data().len() as f32;
         assert!((variance - 1.0).abs() < 1e-4);
 
         println!("✓ Layer norm forward test passed!");
@@ -293,7 +295,8 @@ mod tests {
 
         y.backward();
 
-        let x_grad = x.grad.borrow();
+        let x_grad_storage = x.grad_storage();
+        let x_grad = x_grad_storage.borrow();
         // Gradients should exist
         assert!(x_grad.iter().all(|&g| !g.is_nan()));
 
@@ -308,8 +311,8 @@ mod tests {
         let y = layer_norm(&x, 1e-5);
 
         // Check each row has mean ~0 and variance ~1
-        let row1_mean: f32 = y.data[0..3].iter().sum::<f32>() / 3.0;
-        let row2_mean: f32 = y.data[3..6].iter().sum::<f32>() / 3.0;
+        let row1_mean: f32 = y.data()[0..3].iter().sum::<f32>() / 3.0;
+        let row2_mean: f32 = y.data()[3..6].iter().sum::<f32>() / 3.0;
         assert!(row1_mean.abs() < 1e-5);
         assert!(row2_mean.abs() < 1e-5);
 

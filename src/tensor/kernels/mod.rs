@@ -29,13 +29,13 @@ pub(crate) struct GemmParams<'a> {
     pub alpha: f32,
 }
 
-pub mod cpu_gemm;
-pub mod metal_gemm;
 pub mod amx_gemm;
 pub mod backend;
+pub mod cpu_gemm;
+pub mod metal_gemm;
 
 // Re-export the unified backend API for easy access
 pub use backend::{
-    matmul, matmul_backward_left, matmul_backward_right, matmul_with_config, Backend,
-    MatmulConfig, available_backends, print_backend_info,
+    available_backends, matmul, matmul_backward_left, matmul_backward_right, matmul_with_config,
+    print_backend_info, Backend, MatmulConfig,
 };

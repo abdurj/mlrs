@@ -1,6 +1,5 @@
 use crate::nn::Loss;
 use crate::tensor::Tensor;
-use std::rc::Rc;
 use tracing::{debug_span, instrument};
 
 /// Mean Squared Error loss
@@ -115,7 +114,7 @@ impl Default for CrossEntropyLoss {
 impl Loss for CrossEntropyLoss {
     #[instrument(skip(self, logits, targets), fields(logits_shape = ?logits.shape, targets_shape = ?targets.shape))]
     fn forward(&self, logits: &Tensor, targets: &Tensor) -> Tensor {
-        let target_indices: Vec<usize> = targets.data.iter().map(|&x| x as usize).collect();
+        let target_indices: Vec<usize> = targets.data().iter().map(|&x| x as usize).collect();
         self.compute(logits, &target_indices)
     }
 }
@@ -140,7 +139,7 @@ pub fn cross_entropy_loss(logits: &Tensor, targets: &[usize]) -> Tensor {
         "targets length must match batch_size"
     );
 
-    let softmax_probs = compute_softmax(&logits.data, batch_size, num_classes);
+    let softmax_probs = compute_softmax(&logits.data(), batch_size, num_classes);
 
     // Compute loss using cached softmax: -log(softmax[target_class])
     let mut total_loss = 0.0;
@@ -156,10 +155,9 @@ pub fn cross_entropy_loss(logits: &Tensor, targets: &[usize]) -> Tensor {
     if logits.requires_grad {
         result.requires_grad = true;
 
-        let logits_grad = Rc::clone(&logits.grad);
+        let logits_grad = logits.grad_storage();
         let targets_vec = targets.to_vec();
         let shape = logits.shape.clone();
-
 
         let backward_fn = Box::new(move || {
             let _span = debug_span!("CrossEntropyLossBackward").entered();
@@ -202,7 +200,7 @@ mod tests {
         let loss = mse_loss(&predictions, &targets);
 
         // Perfect predictions should give zero loss
-        assert_eq!(loss.data[0], 0.0);
+        assert_eq!(loss.data()[0], 0.0);
 
         println!("✓ MSE loss basic test passed!");
     }
@@ -216,7 +214,7 @@ mod tests {
         let loss = mse_loss(&predictions, &targets);
 
         // MSE = mean([(-0.5)^2, (0.5)^2, (0.5)^2]) = mean([0.25, 0.25, 0.25]) = 0.25
-        assert_eq!(loss.data[0], 0.25);
+        assert_eq!(loss.data()[0], 0.25);
 
         println!("✓ MSE loss with error test passed!");
     }
@@ -231,13 +229,14 @@ mod tests {
         let loss = mse_loss(&predictions, &targets);
 
         // MSE = mean([(1)^2, (1)^2, (1)^2]) = 1.0
-        assert_eq!(loss.data[0], 1.0);
+        assert_eq!(loss.data()[0], 1.0);
 
         loss.backward();
 
         // Gradient: d/dpred MSE = 2/n * (pred - target)
         // = 2/3 * [1, 1, 1] = [2/3, 2/3, 2/3]
-        let pred_grad = predictions.grad.borrow();
+        let pred_grad_storage = predictions.grad_storage();
+        let pred_grad = pred_grad_storage.borrow();
         assert!((pred_grad[0] - 0.6666667).abs() < 1e-6);
         assert!((pred_grad[1] - 0.6666667).abs() < 1e-6);
         assert!((pred_grad[2] - 0.6666667).abs() < 1e-6);
@@ -257,12 +256,13 @@ mod tests {
 
         // MSE = mean([(-0.5)^2, (-0.5)^2, (-0.5)^2, (0.5)^2, (0.5)^2, (0.5)^2])
         // = mean([0.25, 0.25, 0.25, 0.25, 0.25, 0.25]) = 0.25
-        assert_eq!(loss.data[0], 0.25);
+        assert_eq!(loss.data()[0], 0.25);
 
         loss.backward();
 
         // Check gradients flow correctly
-        let pred_grad = predictions.grad.borrow();
+        let pred_grad_storage = predictions.grad_storage();
+        let pred_grad = pred_grad_storage.borrow();
         assert!(pred_grad.iter().all(|&g| !g.is_nan()));
 
         println!("✓ MSE loss 2D test passed!");
@@ -280,11 +280,11 @@ mod tests {
 
         // Small error: (1-0)^2 = 1
         // Large error: (2-0)^2 = 4
-        assert_eq!(loss_small.data[0], 1.0);
-        assert_eq!(loss_large.data[0], 4.0);
+        assert_eq!(loss_small.data()[0], 1.0);
+        assert_eq!(loss_large.data()[0], 4.0);
 
         // Large error should be 4x worse than small error
-        assert_eq!(loss_large.data[0] / loss_small.data[0], 4.0);
+        assert_eq!(loss_large.data()[0] / loss_small.data()[0], 4.0);
 
         println!("✓ MSE loss large errors test passed!");
     }
@@ -312,7 +312,7 @@ mod tests {
 
         // Loss should be very small (close to 0) for perfect predictions
         assert!(
-            loss.data[0] < 0.01,
+            loss.data()[0] < 0.01,
             "Loss should be close to 0 for perfect predictions"
         );
 
@@ -337,7 +337,7 @@ mod tests {
 
         // Loss should be high for wrong predictions
         assert!(
-            loss.data[0] > 5.0,
+            loss.data()[0] > 5.0,
             "Loss should be high for wrong predictions"
         );
 
@@ -361,13 +361,14 @@ mod tests {
         let loss = cross_entropy_loss(&logits, &targets);
 
         // Verify loss is computed
-        assert!(loss.data[0] > 0.0);
+        assert!(loss.data()[0] > 0.0);
 
         // Call autograd backward
         loss.backward();
 
         // Check gradients are computed
-        let grad = logits.grad.borrow();
+        let grad_storage = logits.grad_storage();
+        let grad = grad_storage.borrow();
 
         // For sample 0, target is class 2, so:
         // - grad[0,2] should be negative (softmax[2] - 1)/batch_size
@@ -415,7 +416,7 @@ mod tests {
 
         // Loss should be -log(1/3) ≈ 1.0986 for uniform distribution over 3 classes
         let expected_loss = -(1.0f32 / 3.0).ln();
-        assert!((loss.data[0] - expected_loss).abs() < 0.01);
+        assert!((loss.data()[0] - expected_loss).abs() < 0.01);
 
         println!("✓ Cross-entropy uniform distribution test passed!");
     }
@@ -437,12 +438,13 @@ mod tests {
         let loss = cross_entropy_loss(&logits, &targets);
 
         // Should not produce NaN or Inf
-        assert!(!loss.data[0].is_nan(), "Loss should not be NaN");
-        assert!(!loss.data[0].is_infinite(), "Loss should not be infinite");
+        assert!(!loss.data()[0].is_nan(), "Loss should not be NaN");
+        assert!(!loss.data()[0].is_infinite(), "Loss should not be infinite");
 
         // Call backward to test gradient computation stability
         loss.backward();
-        let grad = logits.grad.borrow();
+        let grad_storage = logits.grad_storage();
+        let grad = grad_storage.borrow();
         assert!(
             grad.iter().all(|&g| !g.is_nan()),
             "Gradients should not be NaN"

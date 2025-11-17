@@ -121,12 +121,12 @@ fn train_epoch<L: Loss>(
         // Extract batch data [curr_batch_size, 784]
         let batch_data: Vec<f32> = {
             let _span = info_span!("extract_batch_data").entered();
-            data.data[start * 784..end * 784].to_vec()
+            data.data()[start * 784..end * 784].to_vec()
         };
         let batch_tensor = Tensor::new(batch_data, vec![curr_batch_size, 784]).requires_grad(true);
 
         // Extract batch labels [curr_batch_size, 1]
-        let batch_label_data: Vec<f32> = labels.data[start..end].to_vec();
+        let batch_label_data: Vec<f32> = labels.data()[start..end].to_vec();
         let batch_labels = Tensor::new(batch_label_data, vec![curr_batch_size, 1]);
 
         // Zero gradients
@@ -143,7 +143,7 @@ fn train_epoch<L: Loss>(
             let _span = info_span!("compute_loss").entered();
             loss_fn.forward(&predictions, &batch_labels)
         };
-        total_loss += loss.data[0];
+        total_loss += loss.data()[0];
 
         // Backward pass
         {

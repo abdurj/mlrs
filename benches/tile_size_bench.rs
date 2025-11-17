@@ -27,12 +27,7 @@ fn gemm_tiling_1d(a: &Tensor, b: &Tensor, c: &mut Tensor, tile_size: usize) {
     }
 }
 
-fn benchmark_tile_size(
-    a: &Tensor,
-    b: &Tensor,
-    tile_size: usize,
-    iterations: usize,
-) -> f64 {
+fn benchmark_tile_size(a: &Tensor, b: &Tensor, tile_size: usize, iterations: usize) -> f64 {
     // Warm-up
     for _ in 0..3 {
         let mut c = Tensor::zeros(vec![a.shape[0], b.shape[1]]);

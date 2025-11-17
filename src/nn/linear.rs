@@ -16,7 +16,11 @@ impl Linear {
 
         // Xavier init: scale = sqrt(2.0 / in_features)
         let scale = (2.0 / in_features as f32).sqrt();
-        weight.data.iter_mut().for_each(|x| *x *= scale);
+        weight
+            .data_storage_mut()
+            .borrow_mut()
+            .iter_mut()
+            .for_each(|x| *x *= scale);
 
         Linear {
             weight,
